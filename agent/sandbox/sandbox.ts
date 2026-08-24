@@ -1,6 +1,6 @@
 import { defineSandbox } from "eve/sandbox";
 import { docker } from "eve/sandbox/docker";
-import { getUserByPrincipal } from "./lib/users";
+import { getUserByPrincipal } from "../lib/users";
 
 // NOTE: the Docker backend honors only "allow-all"/"deny-all" network policies.
 // We keep the default allow-all and rely on keeping secrets out of the sandbox:
