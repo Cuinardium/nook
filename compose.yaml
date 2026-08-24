@@ -1,0 +1,28 @@
+name: nook
+
+services:
+  nook:
+    image: ${NOOK_IMAGE:-ghcr.io/cuini/nook:latest}
+    restart: unless-stopped
+    stop_grace_period: 30s
+    env_file: .env
+    environment:
+      # Inside the container the app root is /app, so durable runtime state
+      # (.eve/.workflow-data) must live on the mounted volume.
+      HOME: /app
+    ports:
+      # Loopback only; Caddy in the shared docker network reaches nook:3000.
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - nook_state:/app/.eve
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - caddy
+
+networks:
+  caddy:
+    name: ${CADDY_NETWORK:-caddy_default}
+    external: true
+
+volumes:
+  nook_state:
