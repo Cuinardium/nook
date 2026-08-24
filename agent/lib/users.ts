@@ -16,7 +16,8 @@ export type NookUser = {
 export function getUsers(): NookUser[] {
   const raw = process.env.NOOK_USERS;
   if (!raw) {
-    throw new Error("NOOK_USERS env var is required (JSON array of NookUser)");
+    console.warn("[nook] NOOK_USERS is not set: allowlist is empty, all Telegram messages are dropped");
+    return [];
   }
   const users: unknown = JSON.parse(raw);
   if (!Array.isArray(users)) {
