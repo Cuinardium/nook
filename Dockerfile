@@ -17,6 +17,10 @@ RUN apt-get update -qq \
 COPY --from=docker:28-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=builder /app/.output ./.output
 COPY --from=builder /app/node_modules ./node_modules
+# `eve start` resolves the app root from these markers (package.json + agent/)
+# before it can prewarm sandbox templates.
+COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/agent ./agent
 
 ENV NODE_ENV=production \
     PORT=3000 \
