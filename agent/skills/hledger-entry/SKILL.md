@@ -23,7 +23,9 @@ description: Procedimiento paso a paso para registrar una compra, ingreso o gana
      operación de cartera; usá lotes `{costo}` igual que las entradas previas.
 
 4. **Validar**: appendear al journal y correr `hledger check` más
-   `hledger bal -p "today"`. Si hay error, corregilo antes de seguir.
+   `hledger bal -p "today"`. Si hay error, corregilo antes de seguir. Si el
+   error es por precios faltantes (`include precios/`), llamá `update_prices`
+   y reintentá.
 
 5. **Proponer**: mostrale al usuario el bloque completo de la transacción tal
    cual quedó escrito, más una línea explicando la categoría elegida si hubo

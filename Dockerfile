@@ -21,6 +21,9 @@ COPY --from=builder /app/node_modules ./node_modules
 # before it can prewarm sandbox templates.
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/agent ./agent
+# Admin CLI for the user registry, run via `docker compose exec`:
+#   node scripts/users.ts list|add|remove
+COPY --from=builder /app/scripts ./scripts
 
 ENV NODE_ENV=production \
     PORT=3000 \

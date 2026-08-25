@@ -7,25 +7,7 @@ import { log } from "../lib/log";
 
 // NOTE: the Docker backend honors only "allow-all"/"deny-all" network policies.
 // We keep the default allow-all and rely on keeping secrets out of the sandbox:
-// the forge token lives in ~/.git-credentials outside /workspace, and nothing
-// else sensitive is ever injected.
-
-const PRICE_FILL = [
-  "set -e",
-  "cd /workspace/ledger",
-  "ls *.journal >/dev/null 2>&1 || exit 0",
-  // Plain journals (no price includes) need nothing; generated prices are out of scope for the bot.
-  "grep -q '^include precios/' *.journal || exit 0",
-  "mkdir -p precios",
-  "F=$(date +%F)",
-  "curl -fsS https://dolarapi.com/v1/dolares \\",
-  '| jq -r --arg f "$F" \'',
-  '  def tipo: if . == "bolsa" then "MEP" elif . == "contadoconliqui" then "CCL" else ascii_upcase end;',
-  '  (.[] | select(.venta != null) | "P \\($f) USD_\\(.casa | tipo) \\(.venta) ARS"),',
-  '  ("P \\($f) USD \\([.[] | select(.casa == "bolsa") | .venta][0]) $"),',
-  '  ("P \\($f) ARS 1 $")\' > precios/dolares.journal',
-  "touch precios/stocks.journal",
-].join("\n");
+// the forge token is injected per operation (lib/forge) and never persists.
 
 export default defineSandbox({
   backend: docker({
@@ -95,7 +77,14 @@ export default defineSandbox({
         `git -C /workspace/ledger config user.name "nook" && git -C /workspace/ledger config user.email "${config.commitEmail}"`,
     });
 
-    await s.run({ command: PRICE_FILL });
+    // Existence guarantee only (no network): journals with `include precios/`
+    // fail hledger until those files exist. Real data comes from the
+    // update_prices tool when the agent needs fresh rates.
+    await s.run({
+      command:
+        "mkdir -p /workspace/ledger/precios && " +
+        "touch /workspace/ledger/precios/dolares.journal /workspace/ledger/precios/stocks.journal",
+    });
 
     // Readiness smoke test before declaring the session ready: surfaces an
     // empty clone, wrong path, or missing journals at startup instead of

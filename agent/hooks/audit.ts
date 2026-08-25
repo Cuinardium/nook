@@ -1,6 +1,7 @@
 import { defineHook } from "eve/hooks";
 import { log } from "../lib/log";
-import { auditProjection } from "../tools/commit_entry";
+import { auditProjection as commitEntryAudit } from "../tools/commit_entry";
+import { auditProjection as updatePricesAudit } from "../tools/update_prices";
 
 /**
  * Audit trail for nook: structured log lines captured by `docker logs`.
@@ -11,7 +12,8 @@ import { auditProjection } from "../tools/commit_entry";
  * rejected and failed outcomes get a generic row automatically.
  */
 const AUDITED = [
-  { name: "commit_entry", tag: "ledger.commit", project: auditProjection },
+  { name: "commit_entry", tag: "ledger.commit", project: commitEntryAudit },
+  { name: "update_prices", tag: "ledger.prices", project: updatePricesAudit },
 ];
 
 export default defineHook({
