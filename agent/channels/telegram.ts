@@ -11,6 +11,7 @@ import {
   isCommitApproval,
 } from "../lib/cards";
 import { getUserByTelegramId } from "../lib/users";
+import { outputSchema } from "../tools/commit_entry";
 
 export default telegramChannel({
   uploadPolicy: {
@@ -86,13 +87,14 @@ export default telegramChannel({
         );
         return;
       }
-      await channel.telegram.post(
-        commitResultCard(
-          typeof action.output === "object" && action.output !== null
-            ? (action.output as Record<string, unknown>)
-            : {},
-        ),
-      );
+      const parsed = outputSchema.safeParse(action.output);
+      if (!parsed.success) {
+        await channel.telegram.post(
+          "⚠️ commit_entry devolvió una salida inesperada.",
+        );
+        return;
+      }
+      await channel.telegram.post(commitResultCard(parsed.data));
     },
   },
 });

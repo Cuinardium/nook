@@ -31,17 +31,13 @@ export function commitApprovalCard(message: string): string {
   ].join("\n");
 }
 
-export type CommitOutput = {
-  committed?: boolean;
-  reason?: string;
-  sha?: string;
-  pushed?: boolean;
-  detail?: string;
-};
+import type { CommitOutput } from "../tools/commit_entry";
+
+export type { CommitOutput };
 
 export function commitResultCard(output: CommitOutput): string {
   if (!output.committed) {
-    return `ℹ️ Nada para commitear (${output.reason ?? "sin cambios"}).`;
+    return `ℹ️ Nada para commitear (${output.reason}).`;
   }
   if (output.pushed) {
     return ["✅ Entrada registrada", "", `Commit ${output.sha ?? "?"} pusheado al repo.`].join(

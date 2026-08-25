@@ -31,7 +31,8 @@ description: Procedimiento paso a paso para registrar una compra, ingreso o gana
    cuando el asiento mostrado es el definitivo.
 
 6. **Commitear**: llamá `commit_entry` con `message` descriptivo (misma frase
-   de la descripción de la transacción). Reportá el sha devuelto.
+   de la descripción de la transacción). Si devuelve sha, reportalo. Si vuelve
+   con `committed: false`, contale el motivo al usuario y no reintentes sin más.
 
 7. **Si el usuario corrige algo** («no, eran 20 mil», «esa era EUR»): corregí
    el asiento aún no commiteado y volvé al paso 4. Si ya fue commiteado,

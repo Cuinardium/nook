@@ -1,10 +1,19 @@
 import { defineHook } from "eve/hooks";
 import { log } from "../lib/log";
+import { auditProjection } from "../tools/commit_entry";
 
 /**
- * Audit trail for nook: structured log lines captured by `docker logs`
- *  Observe-only
+ * Audit trail for nook: structured log lines captured by `docker logs`.
+ * Observe-only.
+ *
+ * A tool gets an audit row when it registers here. Its module exports an
+ * `auditProjection(output)` mapping a successful output to extra fields;
+ * rejected and failed outcomes get a generic row automatically.
  */
+const AUDITED = [
+  { name: "commit_entry", tag: "ledger.commit", project: auditProjection },
+];
+
 export default defineHook({
   events: {
     async "session.started"(_event, ctx) {
@@ -26,34 +35,59 @@ export default defineHook({
     },
     async "action.result"(event, ctx) {
       const action = event.data.result;
-      if (action.kind !== "tool-result" || action.toolName !== "commit_entry") {
+      if (action.kind !== "tool-result") {
         return;
       }
-
-      const output =
-        typeof action.output === "object" && action.output !== null
-          ? (action.output as Record<string, unknown>)
-          : {};
 
       const principalId = ctx.session.auth.current?.principalId;
       if (!principalId) {
         log.error({
-          audit: "ledger.commit",
+          audit: "tool",
+          toolName: action.toolName,
           sessionId: ctx.session.id,
           status: event.data.status,
-          msg: "commit result observed without authenticated principal",
+          msg: "tool result observed without authenticated principal",
         });
         return;
       }
 
-      log.info({
-        audit: "ledger.commit",
+      const entry = AUDITED.find(
+        (candidate) => candidate.name === action.toolName,
+      );
+      if (!entry) {
+        return;
+      }
+
+      const logBase = {
+        audit: entry.tag,
+        toolName: entry.name,
         sessionId: ctx.session.id,
         principalId,
         status: event.data.status,
-        sha: output.sha ?? null,
-        pushed: output.pushed ?? false,
-      });
+      };
+
+      // No tool output exists for keyboard rejections or thrown refusals.
+      if (event.data.status === "rejected") {
+        log.info(logBase);
+        return;
+      }
+      if (event.data.status === "failed" || event.data.error) {
+        log.warn({
+          ...logBase,
+          msg: event.data.error?.message ?? "la tool falló",
+        });
+        return;
+      }
+
+      try {
+        log.info({ ...logBase, ...entry.project(action.output) });
+      } catch (err) {
+        log.warn({
+          ...logBase,
+          msg: err instanceof Error ? err.message : String(err),
+          output: action.output,
+        });
+      }
     },
   },
 });

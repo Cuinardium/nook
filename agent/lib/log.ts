@@ -1,4 +1,4 @@
-type LogFields = Record<string, unknown>;
+export type LogFields = Record<string, unknown>;
 
 function emit(level: "info" | "warn" | "error", fields: LogFields): void {
   console[level](JSON.stringify(fields));
