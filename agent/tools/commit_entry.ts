@@ -88,15 +88,20 @@ export default defineTool({
       command: `git -C ${repo} add -- ':(top)*.journal'`,
     });
 
-    // Anything still dirty was not staged: foreign dirt refuses the commit
-    // and rolls the index back. Detection only — lines are never parsed.
+    // Anything still dirty in the WORKTREE was not staged by the glob
+    // If anything present we refuse the commit
     const leftover = await sb.run({
       command: `git -C ${repo} status --porcelain`,
     });
-    if (leftover.stdout.trim()) {
+
+    const unstaged = leftover.stdout
+      .split("\n")
+      .filter((line) => line.length >= 2 && line[1] !== " ");
+
+    if (unstaged.length > 0) {
       await sb.run({ command: `git -C ${repo} reset` });
       throw new Error(
-        `commit_entry: hay cambios por fuera de los journals raíz:\n${leftover.stdout.trim()}`,
+        `commit_entry: hay cambios por fuera de los journals raíz:\n${unstaged.join("\n")}`,
       );
     }
 
