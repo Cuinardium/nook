@@ -1,21 +1,22 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { defineAgent, defineDynamic } from "eve";
+import { config } from "./lib/config";
 
 const opencode = createOpenAICompatible({
   name: "opencode-go",
-  baseURL: process.env.OPENCODE_BASE_URL ?? "https://opencode.ai/zen/go/v1",
-  apiKey: process.env.OPENCODE_API_KEY ?? "",
+  baseURL: config.openCodeBaseUrl,
+  apiKey: config.openCodeApiKey,
 });
 
 // OpenCode Go models are not in the AI Gateway catalog, so the context window
-// must be stated explicitly for compaction. Override via env if it changes.
-const CONTEXT_TOKENS = Number(process.env.NOOK_MODEL_CONTEXT_TOKENS ?? 131072);
+// must be stated explicitly for compaction.
+const CONTEXT_TOKENS = config.modelContextTokens;
 
 export default defineAgent({
   model: defineDynamic({
     events: {
       "step.started": () => ({
-        model: opencode(process.env.OPENCODE_MODEL ?? "deepseek-v4-flash"),
+        model: opencode(config.openCodeModel),
         modelContextWindowTokens: CONTEXT_TOKENS,
       }),
     },

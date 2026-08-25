@@ -1,5 +1,6 @@
 import { defineSandbox } from "eve/sandbox";
 import { docker } from "eve/sandbox/docker";
+import { config } from "../lib/config";
 import { getUserByPrincipal } from "../lib/users";
 import { log } from "../lib/log";
 
@@ -28,7 +29,7 @@ const PRICE_FILL = [
 export default defineSandbox({
   backend: docker({
     env: {
-      TZ: process.env.NOOK_TIMEZONE ?? "America/Argentina/Buenos_Aires",
+      TZ: config.timezone,
       LC_ALL: "C.UTF-8",
     },
   }),
@@ -113,10 +114,7 @@ export default defineSandbox({
 
     await s.run({
       command:
-        'git -C /workspace/ledger config user.name "nook" && ' +
-        `git -C /workspace/ledger config user.email "${
-          process.env.NOOK_COMMIT_EMAIL ?? "santiago.balleri@gmail.com"
-        }"`,
+        `git -C /workspace/ledger config user.name "nook" && git -C /workspace/ledger config user.email "${config.commitEmail}"`,
     });
 
     await s.run({ command: PRICE_FILL });
