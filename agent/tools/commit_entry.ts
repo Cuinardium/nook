@@ -1,7 +1,9 @@
 import { defineTool } from "eve/tools";
 import { always } from "eve/tools/approval";
 import { z } from "zod";
+import { gitAuthFlag, withForgeCredentials } from "../lib/forge";
 import type { LogFields } from "../lib/log";
+import { getUserByPrincipal } from "../lib/users";
 
 const JOURNAL_PATH = /^[\w.-]+\.journal$/;
 
@@ -43,9 +45,15 @@ export default defineTool({
   outputSchema,
   approval: always(),
   async execute({ message }, ctx) {
-    // TODO: Podriamos inyectar aca las credenciales? asi el agente sin nuestro approval no puede acceder al repo
     const sb = await ctx.getSandbox();
     const repo = "/workspace/ledger";
+
+    // Credentials are injected per operation (post-approval); resolving the
+    // user here means a removed principal fails closed before any git work.
+    const user = getUserByPrincipal(ctx.session.auth.current?.principalId);
+    if (!user) {
+      throw new Error("commit_entry: sesión sin usuario registrado");
+    }
 
     const status = await sb.run({
       command: `git -C ${repo} status --porcelain`,
@@ -102,12 +110,20 @@ export default defineTool({
       await sb.run({ command: `git -C ${repo} rev-parse --short HEAD` })
     ).stdout.trim();
 
-    // Rebase first so concurrent pushes from other machines never block the user.
-    const push = await sb.run({
-      command: `git -C ${repo} pull --rebase --autostash && git -C ${repo} push`,
-    });
-    const pushed = push.exitCode === 0;
-    const detail = pushed ? push.stdout : push.stderr;
+    // Rebase first so concurrent pushes from other machines never block the
+    // user. Network ops run with per-operation credential injection.
+    let pushed = false;
+    let detail = "";
+    await withForgeCredentials(sb, user, async () => {
+      const auth = gitAuthFlag();
+      const push = await sb.run({
+        command:
+          `git -C ${repo} ${auth} pull --rebase --autostash && ` +
+          `git -C ${repo} ${auth} push`,
+      });
+      pushed = push.exitCode === 0;
+      detail = pushed ? push.stdout : push.stderr;
+    });;
 
     return {
       committed: true,

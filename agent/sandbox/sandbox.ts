@@ -1,6 +1,7 @@
 import { defineSandbox } from "eve/sandbox";
 import { docker } from "eve/sandbox/docker";
 import { config } from "../lib/config";
+import { gitAuthFlag, withForgeCredentials } from "../lib/forge";
 import { getUserByPrincipal } from "../lib/users";
 import { log } from "../lib/log";
 
@@ -78,38 +79,15 @@ export default defineSandbox({
       );
     }
 
-    // Forge credentials go to ~/.git-credentials (outside /workspace); every git
-    // operation uses the clean URL so the token never appears in commands.
-    const token = process.env[user.forgeTokenEnv];
-    if (!token) {
-      throw new Error(
-        `Missing ${user.forgeTokenEnv} for principal ${user.principalId}`,
-      );
-    }
-
-    const url = new URL(user.repoUrl);
-    const host = url.host;
-
-    // Gitea expects the token's owning username in basic auth; the repo
-    // owner segment matches it for personal repos like /cuini/ledger.git.
-    const forgeUser =
-      url.pathname.split("/").filter(Boolean)[0] ?? principal ?? "nook";
-
-    const home =
-      (await s.run({ command: "echo $HOME" })).stdout.trim() || "/root";
-
-    await s.writeTextFile({
-      path: `${home}/.git-credentials`,
-      content: `https://${forgeUser}:${token}@${host}\n`,
-    });
-
-    await s.run({
-      command: `git config --global credential.helper store && chmod 600 ${home}/.git-credentials`,
-    });
-
-    // Clean repo start
-    await s.run({
-      command: `rm -rf /workspace/ledger && git clone ${user.repoUrl} /workspace/ledger`,
+    // Clean repo start. The clone runs with per-operation credential
+    // injection (lib/forge): nothing auth-related persists in the container,
+    // so the agent can read files but never the token or remote access.
+    await withForgeCredentials(s, user, async () => {
+      await s.run({
+        command:
+          `rm -rf /workspace/ledger && ` +
+          `git ${gitAuthFlag()} clone ${user.repoUrl} /workspace/ledger`,
+      });
     });
 
     await s.run({
