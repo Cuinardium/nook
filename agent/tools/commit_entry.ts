@@ -3,6 +3,7 @@ import { always } from "eve/tools/approval";
 import { z } from "zod";
 import { gitAuthFlag, withForgeCredentials } from "../lib/forge";
 import type { LogFields } from "../lib/log";
+import { sessionOwner } from "../lib/owner";
 import { getUserByPrincipal } from "../lib/users";
 
 const JOURNAL_PATH = /^[\w.-]+\.journal$/;
@@ -50,9 +51,23 @@ export default defineTool({
 
     // Credentials are injected per operation (post-approval); resolving the
     // user here means a removed principal fails closed before any git work.
-    const user = getUserByPrincipal(ctx.session.auth.current?.principalId);
+    // Telegram approval responses resume the turn anonymously, so session
+    // auth alone is not enough — fall back to the captured owner.
+    const principalId =
+      ctx.session.auth.current?.principalId ??
+      sessionOwner.get()
+
+    if (!principalId) {
+      throw new Error(
+        "commit_entry: no se pudo resolver el principal de la sesión",
+      );
+    }
+
+    const user = getUserByPrincipal(principalId);
     if (!user) {
-      throw new Error("commit_entry: sesión sin usuario registrado");
+      throw new Error(
+        `commit_entry: el principal ${principalId} no está en el registro de usuarios`,
+      );
     }
 
     const status = await sb.run({

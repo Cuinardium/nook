@@ -2,12 +2,8 @@ import { defineSandbox } from "eve/sandbox";
 import { docker } from "eve/sandbox/docker";
 import { getConfig } from "../lib/config";
 import { gitAuthFlag, withForgeCredentials } from "../lib/forge";
-import { getUserByPrincipal } from "../lib/users";
 import { log } from "../lib/log";
-
-// NOTE: the Docker backend honors only "allow-all"/"deny-all" network policies.
-// We keep the default allow-all and rely on keeping secrets out of the sandbox:
-// the forge token is injected per operation (lib/forge) and never persists.
+import { getUserByPrincipal } from "../lib/users";
 
 export default defineSandbox({
   backend: docker({
@@ -53,11 +49,14 @@ export default defineSandbox({
     const s = await use();
 
     const principal = ctx.session.auth.current?.principalId;
-    const user = getUserByPrincipal(principal);
+    if (!principal) {
+      throw new Error("sandbox: session has no authenticated principal");
+    }
 
+    const user = getUserByPrincipal(principal);
     if (!user) {
       throw new Error(
-        `sandbox: refusing session for unregistered principal ${principal ?? "(none)"}`,
+        `sandbox: refusing session for unregistered principal ${principal}`,
       );
     }
 

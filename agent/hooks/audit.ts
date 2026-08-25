@@ -1,5 +1,6 @@
 import { defineHook } from "eve/hooks";
 import { log } from "../lib/log";
+import { sessionOwner } from "../lib/owner";
 import { auditProjection as commitEntryAudit } from "../tools/commit_entry";
 import { auditProjection as updatePricesAudit } from "../tools/update_prices";
 
@@ -41,7 +42,9 @@ export default defineHook({
         return;
       }
 
-      const principalId = ctx.session.auth.current?.principalId;
+      const principalId =
+        ctx.session.auth.current?.principalId ?? sessionOwner.get();
+
       if (!principalId) {
         log.error({
           audit: "tool",
