@@ -1,6 +1,7 @@
 import { defineSandbox } from "eve/sandbox";
 import { docker } from "eve/sandbox/docker";
 import { getUserByPrincipal } from "../lib/users";
+import { log } from "../lib/log";
 
 // NOTE: the Docker backend honors only "allow-all"/"deny-all" network policies.
 // We keep the default allow-all and rely on keeping secrets out of the sandbox:
@@ -35,12 +36,34 @@ export default defineSandbox({
 
   async bootstrap({ use }) {
     const s = await use();
-    await s.run({
-      command:
-        "(sudo apt-get update -qq && sudo apt-get install -y -qq hledger jq curl) || " +
-        "(apt-get update -qq && apt-get install -y -qq hledger jq curl)",
+
+    // s.run reports nonzero exits instead of throwing, so the sudo fallback
+    // branches here instead of hiding in one fragile shell string.
+    const install = (sudo: boolean) =>
+      s.run({
+        command:
+          `${sudo ? "sudo " : ""}apt-get update -qq && ` +
+          `${sudo ? "sudo " : ""}apt-get install -y -qq hledger jq curl`,
+      });
+
+    let attempt = await install(true);
+    if (attempt.exitCode !== 0) {
+      attempt = await install(false);
+    }
+    if (attempt.exitCode !== 0) {
+      throw new Error(
+        `bootstrap: apt-get failed:\n${attempt.stderr || attempt.stdout}`,
+      );
+    }
+
+    const versions = await s.run({
+      command: "hledger --version && jq --version",
     });
-    await s.run({ command: "hledger --version && jq --version" });
+    if (versions.exitCode !== 0) {
+      throw new Error(
+        `bootstrap: hledger/jq unavailable after install:\n${versions.stderr || versions.stdout}`,
+      );
+    }
   },
 
   async onSession({ use, ctx }) {
@@ -48,37 +71,45 @@ export default defineSandbox({
 
     const principal = ctx.session.auth.current?.principalId;
     const user = getUserByPrincipal(principal);
-    // Fallback for `eve dev` TUI sessions without an allowlisted principal.
-    const devRepo = process.env.NOOK_DEV_REPO;
-    if (!user && !devRepo) return;
 
-    const repoUrl = user?.repoUrl ?? devRepo!;
+    if (!user) {
+      return;
+    }
 
     // Forge credentials go to ~/.git-credentials (outside /workspace); every git
     // operation uses the clean URL so the token never appears in commands.
-    if (user) {
-      const token = process.env[user.forgeTokenEnv];
-      if (!token) {
-        throw new Error(`Missing ${user.forgeTokenEnv} for principal ${user.principalId}`);
-      }
-      const url = new URL(repoUrl);
-      const host = url.host;
-      // Gitea expects the token's owning username in basic auth; the repo
-      // owner segment matches it for personal repos like /cuini/ledger.git.
-      const forgeUser = url.pathname.split("/").filter(Boolean)[0] ?? principal ?? "nook";
-      const home = (await s.run({ command: "echo $HOME" })).stdout.trim() || "/root";
-      await s.writeTextFile({
-        path: `${home}/.git-credentials`,
-        content: `https://${forgeUser}:${token}@${host}\n`,
-      });
-      await s.run({
-        command: `git config --global credential.helper store && chmod 600 ${home}/.git-credentials`,
-      });
+    const token = process.env[user.forgeTokenEnv];
+    if (!token) {
+      throw new Error(
+        `Missing ${user.forgeTokenEnv} for principal ${user.principalId}`,
+      );
     }
 
-    await s.run({
-      command: `rm -rf /workspace/ledger && git clone ${repoUrl} /workspace/ledger`,
+    const url = new URL(user.repoUrl);
+    const host = url.host;
+
+    // Gitea expects the token's owning username in basic auth; the repo
+    // owner segment matches it for personal repos like /cuini/ledger.git.
+    const forgeUser =
+      url.pathname.split("/").filter(Boolean)[0] ?? principal ?? "nook";
+
+    const home =
+      (await s.run({ command: "echo $HOME" })).stdout.trim() || "/root";
+
+    await s.writeTextFile({
+      path: `${home}/.git-credentials`,
+      content: `https://${forgeUser}:${token}@${host}\n`,
     });
+
+    await s.run({
+      command: `git config --global credential.helper store && chmod 600 ${home}/.git-credentials`,
+    });
+
+    // Clean repo start
+    await s.run({
+      command: `rm -rf /workspace/ledger && git clone ${user.repoUrl} /workspace/ledger`,
+    });
+
     await s.run({
       command:
         'git -C /workspace/ledger config user.name "nook" && ' +
@@ -89,9 +120,24 @@ export default defineSandbox({
 
     await s.run({ command: PRICE_FILL });
 
+    // Readiness smoke test before declaring the session ready: surfaces an
+    // empty clone, wrong path, or missing journals at startup instead of
+    // mid-conversation when the agent first tries to operate.
     const head = await s.run({
-      command: "git -C /workspace/ledger log --oneline -1 && ls /workspace/ledger/*.journal",
+      command:
+        "git -C /workspace/ledger log --oneline -1 && ls /workspace/ledger/*.journal",
     });
-    console.log(`[nook] sandbox ready for ${principal ?? "dev"}:\n${head.stdout}`);
+    if (head.exitCode !== 0) {
+      throw new Error(
+        `sandbox: ledger clone failed readiness check:\n${head.stderr || head.stdout}`,
+      );
+    }
+
+    log.info({
+      module: "sandbox",
+      event: "ready",
+      principal: principal,
+      head: head.stdout,
+    });
   },
 });

@@ -1,3 +1,5 @@
+import { log } from "./log";
+
 export type NookUser = {
   /** Stable principal stamped into session auth, e.g. "cuini". */
   principalId: string;
@@ -16,7 +18,10 @@ export type NookUser = {
 export function getUsers(): NookUser[] {
   const raw = process.env.NOOK_USERS;
   if (!raw) {
-    console.warn("[nook] NOOK_USERS is not set: allowlist is empty, all Telegram messages are dropped");
+    log.warn({
+      module: "users",
+      msg: "NOOK_USERS is not set: allowlist is empty, all Telegram messages are dropped",
+    });
     return [];
   }
   const users: unknown = JSON.parse(raw);
@@ -31,6 +36,8 @@ export function getUserByTelegramId(telegramUserId: string): NookUser | null {
 }
 
 export function getUserByPrincipal(principalId: string | undefined): NookUser | null {
-  if (!principalId) return null;
+  if (!principalId) {
+    return null;
+  }
   return getUsers().find((u) => u.principalId === principalId) ?? null;
 }
