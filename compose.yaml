@@ -2,7 +2,7 @@ name: nook
 
 services:
   nook:
-    image: ${NOOK_IMAGE:-ghcr.io/cuini/nook:latest}
+    image: ${NOOK_IMAGE:-ghcr.io/cuinardium/nook:latest}
     restart: unless-stopped
     stop_grace_period: 30s
     env_file: .env
