@@ -78,7 +78,9 @@ export default defineSandbox({
     await s.run({
       command:
         'git -C /workspace/ledger config user.name "nook" && ' +
-        `git -C /workspace/ledger config user.email "nook@${principal ?? "dev"}"`,
+        `git -C /workspace/ledger config user.email "${
+          process.env.NOOK_COMMIT_EMAIL ?? "santiago.balleri@gmail.com"
+        }"`,
     });
 
     await s.run({ command: PRICE_FILL });
