@@ -61,11 +61,15 @@ export default defineSandbox({
       if (!token) {
         throw new Error(`Missing ${user.forgeTokenEnv} for principal ${user.principalId}`);
       }
-      const host = new URL(repoUrl).host;
+      const url = new URL(repoUrl);
+      const host = url.host;
+      // Gitea expects the token's owning username in basic auth; the repo
+      // owner segment matches it for personal repos like /cuini/ledger.git.
+      const forgeUser = url.pathname.split("/").filter(Boolean)[0] ?? principal ?? "nook";
       const home = (await s.run({ command: "echo $HOME" })).stdout.trim() || "/root";
       await s.writeTextFile({
         path: `${home}/.git-credentials`,
-        content: `https://nook:${token}@${host}\n`,
+        content: `https://${forgeUser}:${token}@${host}\n`,
       });
       await s.run({
         command: `git config --global credential.helper store && chmod 600 ${home}/.git-credentials`,
