@@ -1,6 +1,6 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { config } from "../lib/config";
+import { getConfig } from "../lib/config";
 import type { LogFields } from "../lib/log";
 
 const outputSchema = z.discriminatedUnion("updated", [
@@ -72,7 +72,7 @@ export default defineTool({
 
     // Date in the user's timezone, matching what the journal expects.
     const date = new Intl.DateTimeFormat("en-CA", {
-      timeZone: config.timezone,
+      timeZone: getConfig().timezone,
     }).format(new Date());
 
     const bolsas = data.find((d) => d.casa === "bolsa");

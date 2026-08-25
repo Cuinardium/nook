@@ -1,6 +1,6 @@
 import { defineSandbox } from "eve/sandbox";
 import { docker } from "eve/sandbox/docker";
-import { config } from "../lib/config";
+import { getConfig } from "../lib/config";
 import { gitAuthFlag, withForgeCredentials } from "../lib/forge";
 import { getUserByPrincipal } from "../lib/users";
 import { log } from "../lib/log";
@@ -12,7 +12,7 @@ import { log } from "../lib/log";
 export default defineSandbox({
   backend: docker({
     env: {
-      TZ: config.timezone,
+      TZ: process.env.NOOK_TIMEZONE ?? "America/Argentina/Buenos_Aires",
       LC_ALL: "C.UTF-8",
     },
   }),
@@ -74,7 +74,8 @@ export default defineSandbox({
 
     await s.run({
       command:
-        `git -C /workspace/ledger config user.name "nook" && git -C /workspace/ledger config user.email "${config.commitEmail}"`,
+        `git -C /workspace/ledger config user.name "nook" && ` +
+        `git -C /workspace/ledger config user.email "${getConfig().commitEmail}"`,
     });
 
     // Existence guarantee only (no network): journals with `include precios/`
