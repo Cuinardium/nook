@@ -37,8 +37,6 @@ export default defineSandbox({
   async bootstrap({ use }) {
     const s = await use();
 
-    // s.run reports nonzero exits instead of throwing, so the sudo fallback
-    // branches here instead of hiding in one fragile shell string.
     const install = (sudo: boolean) =>
       s.run({
         command:
@@ -50,6 +48,7 @@ export default defineSandbox({
     if (attempt.exitCode !== 0) {
       attempt = await install(false);
     }
+
     if (attempt.exitCode !== 0) {
       throw new Error(
         `bootstrap: apt-get failed:\n${attempt.stderr || attempt.stdout}`,
@@ -73,7 +72,9 @@ export default defineSandbox({
     const user = getUserByPrincipal(principal);
 
     if (!user) {
-      return;
+      throw new Error(
+        `sandbox: refusing session for unregistered principal ${principal ?? "(none)"}`,
+      );
     }
 
     // Forge credentials go to ~/.git-credentials (outside /workspace); every git
