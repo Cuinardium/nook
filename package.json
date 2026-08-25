@@ -1,6 +1,6 @@
 {
   "name": "nook",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "type": "module",
   "imports": {
     "#*": "./agent/*",
@@ -9,6 +9,8 @@
   "scripts": {
     "build": "eve build",
     "dev": "eve dev",
+    "lint": "biome lint .",
+    "lint:fix": "biome lint --write --unsafe .",
     "start": "eve start",
     "typecheck": "tsc"
   },
@@ -20,6 +22,7 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.10",
     "@types/node": "24.x",
     "typescript": "7.0.2"
   },
