@@ -7,8 +7,6 @@ RUN npm ci
 COPY . .
 # eve CLI lives in devDependencies; the build compiles agent/ into .output/
 RUN npx eve build
-# Runtime deps kept external as insurance for non-bundled requires.
-RUN npm prune --omit=dev
 
 FROM node:24-slim
 WORKDIR /app
@@ -26,4 +24,7 @@ ENV NODE_ENV=production \
     EVE_DOCKER_PATH=/usr/local/bin/docker
 
 EXPOSE 3000
-CMD ["node", ".output/server/index.mjs"]
+# `eve start` prewarms sandbox templates (builds the hledger template image on
+# the host daemon) BEFORE spawning the Nitro server; a bare `node index.mjs`
+# would serve traffic with no provisioned template.
+CMD ["./node_modules/.bin/eve", "start", "--host", "0.0.0.0"]
