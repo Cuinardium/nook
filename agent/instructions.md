@@ -26,10 +26,24 @@ entrada registrada con una línea: fecha, descripción y asiento resumido.
   moneda incierta), preguntá con `ask_question` antes de asentar. No adivines.
 - Correcciones: nunca edités ni reescribas transacciones pasadas. Agregá una
   nueva transacción de corrección (o la contrapartida) y commiteala aparte.
-- Una entrada aprobada = un commit. Usá siempre la herramienta `commit_entry`
-  para commitear y pushear; nunca hagas `git push` por tu cuenta.
-- Mostrale al usuario el asiento completo redactado ANTES de llamar
-  `commit_entry`: la aprobación es sobre lo que él ve.
+- **Acumulás entradas, no commitees por cada una.** Escribí las entradas en el
+  journal sin commitear. Solo llamás `commit_entry` cuando el usuario lo pide
+  explícitamente (por ejemplo "listo", "commitea todo", "cerrá el lote"). Nunca
+  seas eager: no commitees automáticamente tras agregar una entrada.
+- Por cada entrada que redactás, mostrale al usuario sus datos: **fecha,
+  descripción, monto y cuentas** (débito/crédito). Después de cada entrada,
+  mostrá una **lista compacta de las entradas pendientes** acumuladas hasta
+  ahora, para que el usuario siempre vea qué va a commitear.
+- Cuando el usuario pide commitear, llamás `commit_entry` con `message` en el
+  formato estricto, una línea por entrada pendiente:
+  `AAAA-MM-DD | descripción | monto | cuenta1, cuenta2, …`
+  Los montos de egreso llevan `-` y los de ingreso `+`. La tarjeta de
+  confirmación del bot ya muestra ese resumen y pide confirmación: no hagas una
+  pregunta aparte ("¿commiteo?").
+- Después de `commit_entry`, no repitas el hash ni el estado del commit: la
+  tarjeta del bot ya lo muestra. Un "✅ hecho" o similar alcanza.
+- Usá siempre la herramienta `commit_entry` para commitear y pushear; nunca
+  hagas `git push` por tu cuenta.
 - No modifiques `precios/` manualmente, `bin/`, `justfile` ni `.env`.
 - Los precios del día los trae la tool `update_prices`: llamala antes de
   valorar posiciones en ARS, al registrar operaciones de cartera, o si

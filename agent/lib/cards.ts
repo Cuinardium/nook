@@ -1,8 +1,20 @@
 /**
- * Card texts for the Telegram channel. Plain text only: the channel posts
- * without parse_mode by default, and keeping that consistency avoids any
- * markup-injection surface from model- or user-derived strings.
+ * Card texts for the Telegram channel.
+ *
+ * The confirmation and result cards are rendered as HTML (`parse_mode: HTML`)
+ * so amounts and account lists read cleanly. Every dynamic string is escaped
+ * in `escapeHtml` before it reaches Telegram to avoid broken markup or
+ * injection from model- or user-derived text.
  */
+
+/** Escape a string for safe inclusion in Telegram HTML. */
+export function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
 
 /** Structural subset of eve's InputRequest; avoids importing internal types. */
 export type CommitApprovalRequest = {
@@ -21,14 +33,50 @@ export function commitMessageOf(request: CommitApprovalRequest): string {
   return typeof raw === "string" ? raw : "(sin descripción)";
 }
 
+function transactionEmoji(amount: string): string {
+  const trimmed = amount.trim();
+  if (trimmed.startsWith("-")) {
+    return "💸";
+  }
+  return "💰";
+}
+
+/**
+ * Renders the commit approval card as HTML. The `message` is one line per
+ * pending entry in the strict form `fecha | descripción | monto | cuentas`.
+ * When every line parses, each entry becomes its own block; if any line
+ * deviates we fall back to a single `<pre>` block so a malformed summary
+ * never throws.
+ */
 export function commitApprovalCard(message: string): string {
-  return [
-    "🧾 Confirmar ingesta",
-    "",
-    message,
-    "",
-    "¿Confirmás este asiento? Se commitea y pushea al repo.",
-  ].join("\n");
+  const lines = message
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const parsed = lines.map((line) => line.split("|").map((part) => part.trim()));
+  const wellFormed = parsed.every((parts) => parts.length === 4);
+
+  if (!wellFormed) {
+    return `🧾 <b>Confirmar lote</b>\n\n<pre>${escapeHtml(message)}</pre>\n\n¿Confirmás? Se commitea y pushea al repo.`;
+  }
+
+  const entries = parsed
+    .map(([fecha, descripcion, monto, cuentas]) => {
+      const emoji = transactionEmoji(monto);
+      return (
+        `${emoji} <b>${escapeHtml(descripcion)}</b>\n` +
+        `   <code>${escapeHtml(monto)}</code> · ${escapeHtml(fecha)}\n` +
+        `   <i>${escapeHtml(cuentas)}</i>`
+      );
+    })
+    .join("\n\n");
+
+  const n = lines.length;
+  return (
+    `🧾 <b>Confirmar lote</b> — ${n} entrada${n === 1 ? "" : "s"}\n\n` +
+    `${entries}\n\n¿Confirmás? Se commitea y pushea al repo.`
+  );
 }
 
 import type { CommitOutput } from "../tools/commit_entry";
@@ -37,25 +85,23 @@ export type { CommitOutput };
 
 export function commitResultCard(output: CommitOutput): string {
   if (!output.committed) {
-    return `ℹ️ Nada para commitear (${output.reason}).`;
+    return `ℹ️ No hay nada para commitear (${escapeHtml(output.reason)}).`;
   }
   if (output.pushed) {
-    return ["✅ Entrada registrada", "", `Commit ${output.sha ?? "?"} pusheado al repo.`].join(
-      "\n",
-    );
+    return `✅ <b>Entrada registrada</b>\n\nCommit <code>${escapeHtml(output.sha ?? "?")}</code> pusheado al repo.`;
   }
   return [
-    "⚠️ Commit creado pero el push falló",
-    "",
-    `Commit: ${output.sha ?? "?"}`,
-    output.detail ? `\`${output.detail.slice(0, 400)}\`` : "",
-    "",
-    "Probá de nuevo en unos minutos; si sigue fallando revisá el token del forge.",
+    `⚠️ <b>Commit creado pero el push falló</b>`,
+    ``,
+    `Commit: <code>${escapeHtml(output.sha ?? "?")}</code>`,
+    output.detail ? `<pre>${escapeHtml(output.detail.slice(0, 400))}</pre>` : "",
+    ``,
+    `Probá de nuevo en unos minutos; si sigue fallando revisá el token del forge.`,
   ]
     .filter(Boolean)
     .join("\n");
 }
 
 export function commitRejectedCard(): string {
-  return "❌ Ingesta cancelada, no se tocó el repo.";
+  return "❌ <b>Ingesta cancelada</b>, no se tocó el repo.";
 }
