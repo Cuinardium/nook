@@ -9,6 +9,7 @@ import {
   commitMessageOf,
   commitRejectedCard,
   commitResultCard,
+  escapeHtml,
   isCommitApproval,
 } from "../lib/cards";
 import { getUserByTelegramId } from "../lib/users";
@@ -23,6 +24,9 @@ const typingTimers = new Map<string, ReturnType<typeof setInterval>>();
 // Message id of the active commit approval card, so we can strip its keyboard
 // once the user confirms (prevents a double-tap).
 const approvalCardId = new Map<string, string>();
+// Sha of a commit that exists locally but never reached the remote. Cancel
+// copy depends on it: with one pending, "no se tocó el repo" would be false.
+const pendingCommitSha = new Map<string, string>();
 
 type ChannelHandle = { telegram: { chatId: string; startTyping(): Promise<void> } };
 
@@ -155,17 +159,23 @@ export default telegramChannel({
         approvalCardId.delete(channel.telegram.chatId);
       }
 
+      const chatId = channel.telegram.chatId;
+
       if (data.status === "rejected") {
         await htmlPost(channel as never, {
-          text: commitRejectedCard(),
+          text: commitRejectedCard(pendingCommitSha.get(chatId)),
           parse_mode: "HTML",
         });
         return;
       }
       if (data.status === "failed" || data.error) {
-        await channel.telegram.post(
-          `⚠️ commit_entry falló: ${data.error?.message ?? "error desconocido"}`,
-        );
+        const detail = data.error?.message ?? "error desconocido";
+        await htmlPost(channel as never, {
+          text:
+            `⚠️ <b>No pude completar la operación</b>\n` +
+            `<blockquote expandable>${escapeHtml(detail)}</blockquote>`,
+          parse_mode: "HTML",
+        });
         return;
       }
       const parsed = outputSchema.safeParse(action.output);
@@ -175,6 +185,14 @@ export default telegramChannel({
         );
         return;
       }
+      // Track whether a commit is sitting local-only, for the cancel copy.
+      const status = parsed.data.status;
+      if (status === "push_failed") {
+        pendingCommitSha.set(chatId, parsed.data.sha);
+      } else if (status === "committed_pushed" || status === "pushed_only") {
+        pendingCommitSha.delete(chatId);
+      }
+
       await htmlPost(channel as never, {
         text: commitResultCard(parsed.data),
         parse_mode: "HTML",

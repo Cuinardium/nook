@@ -29,13 +29,30 @@ description: Procedimiento paso a paso para registrar una compra, ingreso o gana
 
 5. **Proponer**: mostrale al usuario el bloque completo de la transacción tal
    cual quedó escrito, más una línea explicando la categoría elegida si hubo
-   duda. Esperá su confirmación implícita llamando `commit_entry` recién
-   cuando el asiento mostrado es el definitivo.
+   duda. Cerrá con la lista compacta de pendientes (`1. Cafe — $4.500`), sin
+   repetir cuentas y sin ofrecerte a commitear: el usuario da la orden.
 
-6. **Commitear**: llamá `commit_entry` con `message` descriptivo (misma frase
-   de la descripción de la transacción). Si devuelve sha, reportalo. Si vuelve
-   con `committed: false`, contale el motivo al usuario y no reintentes sin más.
+6. **Commitear**: cuando el usuario lo pide, llamá `commit_entry` (intent
+   `commit` por default) con una línea por entrada pendiente:
+   `AAAA-MM-DD | descripción | monto | cuenta1, cuenta2, …`. La tarjeta del bot
+   pide la confirmación; no preguntes vos.
 
-7. **Si el usuario corrige algo** («no, eran 20 mil», «esa era EUR»): corregí
+7. **Según el `status` que devuelve**:
+   - `committed_pushed` / `pushed_only`: listo. No repitas el sha.
+   - `clean`: no había nada pendiente; no es un error.
+   - `conflict`: hay un rebase en curso. Abrí cada archivo de `files`, resolvé
+     los marcadores a mano — conservá tus entradas nuevas y respetá lo que el
+     remoto cambió o borró, nunca reintroduzcas líneas que el remoto sacó a
+     propósito —, corré `hledger check` y llamá `commit_entry` con
+     `intent: "continue"`. Si el conflicto te excede, `intent: "abort"` y
+     contale al usuario en una línea qué quedó pendiente.
+   - `push_failed`: el commit está local. Un reintento con `intent: "sync"`;
+     si falla de nuevo, avisá y pará.
+   - `blocked`: leé `reason`, arreglá la causa, no repitas la misma llamada.
+
+   Nunca corras git a mano (`commit`, `push`, `pull`, `reset`): la tool tiene
+   un intent para cada estado.
+
+8. **Si el usuario corrige algo** («no, eran 20 mil», «esa era EUR»): corregí
    el asiento aún no commiteado y volvé al paso 4. Si ya fue commiteado,
    agregá una transacción de corrección nueva y commiteala aparte.

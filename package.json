@@ -12,6 +12,7 @@
     "lint": "biome lint .",
     "lint:fix": "biome lint --write --unsafe .",
     "start": "eve start",
+    "test": "node --test agent/**/*.test.ts",
     "typecheck": "tsc"
   },
   "dependencies": {

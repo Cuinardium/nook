@@ -1,27 +1,32 @@
 import { defineTool } from "eve/tools";
-import { always } from "eve/tools/approval";
 import { z } from "zod";
-import { gitAuthFlag, withForgeCredentials } from "../lib/forge";
-import type { LogFields } from "../lib/log";
-import { sessionOwner } from "../lib/owner";
-import { getUserByPrincipal } from "../lib/users";
+import {
+  abortRebase,
+  commitAndSync,
+  continueRebase,
+  intentSchema,
+  type LedgerOutcome,
+  outcomeSchema,
+  syncOnly,
+} from "../lib/ledger-repo.ts";
+import type { LogFields } from "../lib/log.ts";
+import { sessionOwner } from "../lib/owner.ts";
+import { getUserByPrincipal } from "../lib/users.ts";
 
-const JOURNAL_PATH = /^[\w.-]+\.journal$/;
-
-export const outputSchema = z.discriminatedUnion("committed", [
-  z.object({
-    committed: z.literal(false),
-    reason: z.string(),
-  }),
-  z.object({
-    committed: z.literal(true),
-    sha: z.string(),
-    pushed: z.boolean(),
-    detail: z.string(),
-  }),
-]);
-
-export type CommitOutput = z.infer<typeof outputSchema>;
+/**
+ * The only door to git. Thin on purpose: it resolves who is asking, then
+ * dispatches to the ledger state machine in `lib/ledger-repo`.
+ *
+ *   commit   → stage root journals, commit, rebase, push (needs approval)
+ *   sync     → no commit; rebase and push what is pending
+ *   continue → finish a rebase the agent just resolved, then push
+ *   abort    → drop a stuck rebase, keeping the local commit
+ *
+ * The recovery intents exist so the agent never improvises plumbing
+ * (`reset --soft`, a manual `push`) when the happy path breaks.
+ */
+export const outputSchema = outcomeSchema;
+export type CommitOutput = LedgerOutcome;
 
 /** Audit fields for the ledger.commit row; throws when output drifts off-contract. */
 export function auditProjection(raw: unknown): LogFields {
@@ -29,33 +34,54 @@ export function auditProjection(raw: unknown): LogFields {
   if (!parsed.success) {
     throw new Error("commit_entry output did not match its schema");
   }
-  return parsed.data.committed
-    ? { sha: parsed.data.sha, pushed: parsed.data.pushed }
-    : { sha: null, pushed: false, reason: parsed.data.reason };
+  const out = parsed.data;
+  switch (out.status) {
+    case "committed_pushed":
+    case "pushed_only":
+      return { status: out.status, sha: out.sha, pushed: true };
+    case "push_failed":
+      return { status: out.status, sha: out.sha, pushed: false };
+    case "conflict":
+      return { status: out.status, pushed: false, files: out.files };
+    case "blocked":
+      return { status: out.status, pushed: false, reason: out.reason };
+    default:
+      return { status: out.status, pushed: false, reason: out.reason };
+  }
 }
 
 export default defineTool({
   description:
-    "Comitea y pushea en /workspace/ledger los cambios ya validados y mostrados al usuario. Solo commitea los *.journal de la raíz; si hay otros cambios pendientes, rechaza. Requiere aprobación.",
+    "Única puerta a git en /workspace/ledger. intent=commit: staged de los *.journal raíz, commit y push (pide aprobación). intent=sync: sin commit, rebasea y pushea lo pendiente. intent=continue: cierra un rebase cuyos conflictos ya resolviste. intent=abort: descarta un rebase trabado sin perder el commit local. Devuelve un status estructurado; nunca hagas git a mano.",
   inputSchema: z.object({
+    intent: intentSchema.describe(
+      "commit (default) | sync | continue | abort. Ver la descripción de la tool.",
+    ),
     message: z
       .string()
       .min(1)
-      .describe("Mensaje del commit; usa la descripción de la transacción"),
+      .optional()
+      .describe(
+        "Solo para intent=commit. Una línea por entrada: `AAAA-MM-DD | descripción | monto | cuentas`.",
+      ),
   }),
   outputSchema,
-  approval: always(),
-  async execute({ message }, ctx) {
-    const sb = await ctx.getSandbox();
-    const repo = "/workspace/ledger";
-
+  // Only a new commit needs a human: it is the step that authors content. The
+  // recovery intents move or push work the user already approved, and none of
+  // them can create a commit out of a dirty worktree.
+  approval: ({ toolInput }) => {
+    const intent = (toolInput as { intent?: string } | undefined)?.intent;
+    return intent === undefined || intent === "commit"
+      ? "user-approval"
+      : "not-applicable";
+  },
+  async execute({ intent = "commit", message }, ctx) {
     // Credentials are injected per operation (post-approval); resolving the
     // user here means a removed principal fails closed before any git work.
     // Telegram approval responses resume the turn anonymously, so session
     // auth alone is not enough — fall back to the captured owner.
     const principalId =
-      ctx.session.auth.current?.principalId ??
-      sessionOwner.get()
+      ctx.session.auth.current?.principalId ?? sessionOwner.get();
 
     if (!principalId) {
       throw new Error(
@@ -70,86 +96,21 @@ export default defineTool({
       );
     }
 
-    const status = await sb.run({
-      command: `git -C ${repo} status --porcelain`,
-    });
-    if (!status.stdout.trim()) {
-      return { committed: false, reason: "no hay cambios para commitear" };
+    const sb = await ctx.getSandbox();
+
+    switch (intent) {
+      case "abort":
+        return await abortRebase(sb);
+      case "continue":
+        return await continueRebase(sb, user);
+      case "sync":
+        return await syncOnly(sb, user);
+      default: {
+        if (!message) {
+          throw new Error("commit_entry: intent=commit requiere `message`");
+        }
+        return await commitAndSync(sb, user, message);
+      }
     }
-
-    // The message travels as a file so it is never shell-interpolated.
-    await sb.writeTextFile({
-      path: "/workspace/.commit-msg",
-      content: `${message}\n`,
-    });
-
-    // Only commit top level *.journal
-    await sb.run({
-      command: `git -C ${repo} add -- ':(top)*.journal'`,
-    });
-
-    // Anything still dirty in the WORKTREE was not staged by the glob
-    // If anything present we refuse the commit
-    const leftover = await sb.run({
-      command: `git -C ${repo} status --porcelain`,
-    });
-
-    const unstaged = leftover.stdout
-      .split("\n")
-      .filter((line) => line.length >= 2 && line[1] !== " ");
-
-    if (unstaged.length > 0) {
-      await sb.run({ command: `git -C ${repo} reset` });
-      throw new Error(
-        `commit_entry: hay cambios por fuera de los journals raíz:\n${unstaged.join("\n")}`,
-      );
-    }
-
-    // Verify what is actually staged before committing.
-    const staged = await sb.run({
-      command: `git -C ${repo} diff --cached --name-only`,
-    });
-
-    const stagedPaths = staged.stdout.split("\n").filter((line) => line.trim());
-    const invalidIndex =
-      stagedPaths.length === 0 ||
-      stagedPaths.some((p) => !JOURNAL_PATH.test(p));
-
-    if (invalidIndex) {
-      await sb.run({ command: `git -C ${repo} reset` });
-      throw new Error(
-        `commit_entry: el índice quedó con cambios inesperados:\n${stagedPaths.join("\n")}`,
-      );
-    }
-
-    await sb.run({
-      command: `git -C ${repo} commit -F /workspace/.commit-msg`,
-    });
-    await sb.run({ command: "rm -f /workspace/.commit-msg" });
-    const sha = (
-      await sb.run({ command: `git -C ${repo} rev-parse --short HEAD` })
-    ).stdout.trim();
-
-    // Rebase first so concurrent pushes from other machines never block the
-    // user. Network ops run with per-operation credential injection.
-    let pushed = false;
-    let detail = "";
-    await withForgeCredentials(sb, user, async () => {
-      const auth = gitAuthFlag();
-      const push = await sb.run({
-        command:
-          `git -C ${repo} ${auth} pull --rebase --autostash && ` +
-          `git -C ${repo} ${auth} push`,
-      });
-      pushed = push.exitCode === 0;
-      detail = pushed ? push.stdout : push.stderr;
-    });;
-
-    return {
-      committed: true,
-      sha,
-      pushed,
-      detail,
-    };
   },
 });
