@@ -18,6 +18,35 @@ import type { NookUser } from "./users.ts";
 
 export const REPO = "/workspace/ledger";
 const JOURNAL_PATH = /^[\w.-]+\.journal$/;
+
+/**
+ * Paths the agent may leave dirty without blocking a commit/push.
+ * - `precios/` holds local price caches (dolares.journal, stocks.journal)
+ *   that `update_prices` rewrites but must never be staged (only
+ *   `:(top)*.journal` is staged).  
+ * - `.gitignore` itself: the agent must never stage or push it. If the user
+ *   maintains a `precios/` ignore there, it stays a manual user commit —
+ *   the agent will not block on a dirty `.gitignore` nor stage it.
+ */
+function isIgnoredDirtyPath(path: string): boolean {
+  return path === ".gitignore" || path.startsWith("precios/");
+}
+
+function isRelevantDirtyLine(line: string): boolean {
+  // porcelain: XY<space>path[ -> orig] ; worktree column is line[1]
+  // Filter to commit-relevant dirt: ignore precios/ and .gitignore so
+  // `git status` showing ` M precios/dolares.journal` or ` M .gitignore`
+  // does not trigger the "cambios por fuera de los journals raíz" block.
+  if (line.length < 3 || line[1] === " ") return false;
+  const raw = line.slice(3).trim();
+  // Handle renames: "R  old -> new" — check the destination.
+  const arrow = raw.indexOf(" -> ");
+  const path = arrow >= 0 ? raw.slice(arrow + 4).trim() : raw;
+  // Strip quotes git adds for odd paths.
+  const unquoted =
+    path.startsWith('"') && path.endsWith('"') ? path.slice(1, -1) : path;
+  return !isIgnoredDirtyPath(unquoted);
+}
 /** Rebase+push cycles before giving up on a remote that keeps moving. */
 const PUSH_ATTEMPTS = 3;
 
@@ -207,7 +236,9 @@ export async function syncOnly(
   sb: CommandRunner,
   user: NookUser,
 ): Promise<LedgerOutcome> {
-  const dirty = lines((await runGit(sb, "status --porcelain")).stdout);
+  const dirty = lines((await runGit(sb, "status --porcelain")).stdout).filter(
+    isRelevantDirtyLine,
+  );
   if (dirty.length > 0) {
     return {
       status: "blocked",
@@ -243,7 +274,8 @@ export async function commitAndSync(
   }
 
   const status = await runGit(sb, "status --porcelain");
-  if (!status.stdout.trim()) {
+  const relevantStatus = lines(status.stdout).filter(isRelevantDirtyLine);
+  if (relevantStatus.length === 0) {
     return await syncOnly(sb, user);
   }
 
@@ -256,10 +288,12 @@ export async function commitAndSync(
   await git(sb, "add -- ':(top)*.journal'");
 
   // Anything still dirty in the WORKTREE column was not staged by the glob.
+  // Filter out precios/ and .gitignore — both are local-only and must not
+  // trigger the "cambios por fuera" block.
   const leftover = await runGit(sb, "status --porcelain");
   const unstaged = leftover.stdout
     .split("\n")
-    .filter((line) => line.length >= 2 && line[1] !== " ");
+    .filter(isRelevantDirtyLine);
 
   if (unstaged.length > 0) {
     await git(sb, "reset");
