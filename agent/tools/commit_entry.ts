@@ -7,6 +7,7 @@ import {
   intentSchema,
   type LedgerOutcome,
   outcomeSchema,
+  pullOnly,
   syncOnly,
 } from "../lib/ledger-repo.ts";
 import type { LogFields } from "../lib/log.ts";
@@ -19,6 +20,7 @@ import { getUserByPrincipal } from "../lib/users.ts";
  *
  *   commit   → stage root journals, commit, rebase, push (needs approval)
  *   sync     → no commit; rebase and push what is pending
+ *   pull     → no commit, no push; fetch and rebase onto the remote
  *   continue → finish a rebase the agent just resolved, then push
  *   abort    → drop a stuck rebase, keeping the local commit
  *
@@ -39,8 +41,12 @@ export function auditProjection(raw: unknown): LogFields {
     case "committed_pushed":
     case "pushed_only":
       return { status: out.status, sha: out.sha, pushed: true };
+    case "pulled":
+      return { status: out.status, sha: out.sha, pushed: false };
     case "push_failed":
       return { status: out.status, sha: out.sha, pushed: false };
+    case "pull_failed":
+      return { status: out.status, pushed: false, reason: out.detail };
     case "conflict":
       return { status: out.status, pushed: false, files: out.files };
     case "blocked":
@@ -52,10 +58,10 @@ export function auditProjection(raw: unknown): LogFields {
 
 export default defineTool({
   description:
-    "Única puerta a git en /workspace/ledger. intent=commit: staged de los *.journal raíz, commit y push (pide aprobación). intent=sync: sin commit, rebasea y pushea lo pendiente. intent=continue: cierra un rebase cuyos conflictos ya resolviste. intent=abort: descarta un rebase trabado sin perder el commit local. Devuelve un status estructurado; nunca hagas git a mano.",
+    "Única puerta a git en /workspace/ledger. intent=commit: staged de los *.journal raíz, commit y push (pide aprobación). intent=sync: sin commit, rebasea y pushea lo pendiente. intent=pull: sin commit ni push, trae el remoto y rebasea para analizarlo. intent=continue: cierra un rebase cuyos conflictos ya resolviste. intent=abort: descarta un rebase trabado sin perder el commit local. Devuelve un status estructurado; nunca hagas git a mano.",
   inputSchema: z.object({
     intent: intentSchema.describe(
-      "commit (default) | sync | continue | abort. Ver la descripción de la tool.",
+      "commit (default) | sync | pull | continue | abort. Ver la descripción de la tool.",
     ),
     message: z
       .string()
@@ -105,6 +111,8 @@ export default defineTool({
         return await continueRebase(sb, user);
       case "sync":
         return await syncOnly(sb, user);
+      case "pull":
+        return await pullOnly(sb, user);
       default: {
         if (!message) {
           throw new Error("commit_entry: intent=commit requiere `message`");

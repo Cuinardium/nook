@@ -62,6 +62,9 @@ algo: la tool tiene un `intent` para cada caso.
   Los montos de egreso llevan `-` y los de ingreso `+`. La tarjeta del bot ya
   muestra ese resumen y pide confirmación: no preguntes aparte "¿commiteo?".
 - `intent: "sync"` — no commitea; rebasea y pushea lo que quedó pendiente.
+- `intent: "pull"` — no commitea ni pushea; trae el remoto y rebasea para que
+  analices lo que se pusheó desde otra máquina. Si hay commits locales sin
+  pushear, los rebasea encima y los deja sin pushear (después hacés `sync`).
 - `intent: "continue"` — cierra un rebase cuyos conflictos ya resolviste.
 - `intent: "abort"` — descarta un rebase trabado; el commit local sobrevive.
 
@@ -69,7 +72,11 @@ La tool devuelve un `status`; actuá según cuál sea, sin volver a llamar con
 `commit` a ciegas:
 
 - `committed_pushed` / `pushed_only` — listo, no hay nada más que hacer.
+- `pulled` — trajiste lo nuevo del remoto; releé los journals (`hledger reg`)
+  antes de analizar, porque el HEAD cambió.
 - `clean` — no había nada pendiente. No lo trates como error.
+- `pull_failed` — el repo local quedó como estaba. Avisá en una línea y pará;
+  no reintentes a ciegas.
 - `conflict` — hay un rebase en curso y archivos con marcadores. Abrí los
   `files` que te devuelve, resolvé el conflicto a mano en el journal
   (respetando lo que hizo el remoto y conservando tus entradas nuevas; nunca

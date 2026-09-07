@@ -80,6 +80,25 @@ describe("commitResultCard", () => {
     assert.match(card, /<blockquote expandable>CONFLICT/);
   });
 
+  it("announces a pull without implying a push", () => {
+    const card = commitResultCard({ status: "pulled", sha: "bbb2222" });
+
+    assert.match(card, /Remoto al día/);
+    assert.match(card, /<code>bbb2222<\/code>/);
+    assert.match(card, /sin pushear/);
+    assert.ok(!/Push al día|commiteado/i.test(card));
+  });
+
+  it("says the local repo was left alone when the pull failed", () => {
+    const card = commitResultCard({
+      status: "pull_failed",
+      detail: "fatal: Authentication failed",
+    });
+
+    assert.match(card, /No pude traer del remoto/);
+    assert.match(card, /quedó como estaba/);
+  });
+
   it("says where a commit stands when the push failed", () => {
     const card = commitResultCard({
       status: "push_failed",

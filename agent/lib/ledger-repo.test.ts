@@ -5,6 +5,7 @@ import {
   type CommandRunner,
   commitAndSync,
   continueRebase,
+  pullOnly,
   syncOnly,
 } from "./ledger-repo.ts";
 import type { NookUser } from "./users.ts";
@@ -260,6 +261,102 @@ describe("syncOnly", () => {
     const out = await syncOnly(sb, USER);
 
     assert.equal(out.status, "clean");
+  });
+});
+
+describe("pullOnly", () => {
+  it("brings remote changes without pushing", async () => {
+    const sb = fakeRunner([
+      NO_REBASE,
+      { match: /status --porcelain/, replies: [{ stdout: "" }] },
+      {
+        match: /rev-parse --short HEAD/,
+        replies: [{ stdout: "aaa1111\n" }, { stdout: "bbb2222\n" }],
+      },
+      PULL_OK,
+    ]);
+
+    const out = await pullOnly(sb, USER);
+
+    assert.deepEqual(out, { status: "pulled", sha: "bbb2222" });
+    assert.ok(sb.commands.some((c) => c.includes("pull --rebase")));
+    assert.ok(!sb.commands.some((c) => /(^|\s)push(\s|$)/.test(c)));
+  });
+
+  it("reports clean when the remote brought nothing new", async () => {
+    const sb = fakeRunner([
+      NO_REBASE,
+      { match: /status --porcelain/, replies: [{ stdout: "" }] },
+      SHA,
+      PULL_OK,
+    ]);
+
+    const out = await pullOnly(sb, USER);
+
+    assert.equal(out.status, "clean");
+  });
+
+  it("blocks on a dirty worktree instead of rebasing over it", async () => {
+    const sb = fakeRunner([
+      NO_REBASE,
+      { match: /status --porcelain/, replies: [{ stdout: " M 2026.journal\n" }] },
+    ]);
+
+    const out = await pullOnly(sb, USER);
+
+    assert.equal(out.status, "blocked");
+    assert.ok(!sb.commands.some((c) => c.includes("pull --rebase")));
+  });
+
+  it("reports a conflict instead of leaking git output", async () => {
+    const sb = fakeRunner([
+      { match: /^test -d/, replies: [{ exitCode: 1 }, { exitCode: 0 }] },
+      { match: /status --porcelain/, replies: [{ stdout: "" }] },
+      SHA,
+      {
+        match: /pull --rebase/,
+        replies: [{ exitCode: 1, stderr: "CONFLICT (content): merge conflict" }],
+      },
+      {
+        match: /diff --name-only --diff-filter=U/,
+        replies: [{ stdout: "2026.journal\n" }],
+      },
+    ]);
+
+    const out = await pullOnly(sb, USER);
+
+    assert.equal(out.status, "conflict");
+  });
+
+  it("keeps the local repo untouched when the fetch fails", async () => {
+    const sb = fakeRunner([
+      NO_REBASE,
+      { match: /status --porcelain/, replies: [{ stdout: "" }] },
+      SHA,
+      {
+        match: /pull --rebase/,
+        replies: [{ exitCode: 1, stderr: "fatal: Authentication failed" }],
+      },
+    ]);
+
+    const out = await pullOnly(sb, USER);
+
+    assert.equal(out.status, "pull_failed");
+  });
+
+  it("surfaces a rebase left over from an earlier attempt", async () => {
+    const sb = fakeRunner([
+      REBASING,
+      {
+        match: /diff --name-only --diff-filter=U/,
+        replies: [{ stdout: "2026.journal\n" }],
+      },
+    ]);
+
+    const out = await pullOnly(sb, USER);
+
+    assert.equal(out.status, "conflict");
+    assert.ok(!sb.commands.some((c) => c.includes("pull --rebase")));
   });
 });
 

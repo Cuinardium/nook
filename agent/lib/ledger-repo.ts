@@ -51,7 +51,7 @@ function isRelevantDirtyLine(line: string): boolean {
 const PUSH_ATTEMPTS = 3;
 
 export const intentSchema = z
-  .enum(["commit", "sync", "continue", "abort"])
+  .enum(["commit", "sync", "pull", "continue", "abort"])
   .default("commit");
 
 export type LedgerIntent = z.infer<typeof intentSchema>;
@@ -61,6 +61,10 @@ export const outcomeSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("committed_pushed"), sha: z.string() }),
   /** Nothing new to commit; commits that were pending got pushed. */
   z.object({ status: z.literal("pushed_only"), sha: z.string() }),
+  /** Remote changes were fetched and rebased; nothing was pushed. */
+  z.object({ status: z.literal("pulled"), sha: z.string() }),
+  /** The fetch/rebase side of a pull failed (network/auth/no upstream). */
+  z.object({ status: z.literal("pull_failed"), detail: z.string() }),
   /** Rebase stopped on conflicts. The repo is mid-rebase, awaiting a fix. */
   z.object({
     status: z.literal("conflict"),
@@ -253,6 +257,66 @@ export async function syncOnly(
   }
 
   return await finish(sb, user, false);
+}
+
+/**
+ * Bring remote changes in without pushing anything. For reviewing work pushed
+ * from another machine: fetch + rebase, then stop. Local commits (if any)
+ * are rebased onto the remote and left unpushed — run `sync` afterwards to
+ * push them. Refuses a dirty worktree like `syncOnly` does, and on conflict
+ * leaves the repo mid-rebase for `continueRebase`, same as the push path.
+ */
+export async function pullOnly(
+  sb: CommandRunner,
+  user: NookUser,
+): Promise<LedgerOutcome> {
+  if (await rebaseInProgress(sb)) {
+    return {
+      status: "conflict",
+      files: await unmergedFiles(sb),
+      detail: "hay un rebase en curso de un intento anterior",
+    };
+  }
+
+  const dirty = lines((await runGit(sb, "status --porcelain")).stdout).filter(
+    isRelevantDirtyLine,
+  );
+  if (dirty.length > 0) {
+    return {
+      status: "blocked",
+      reason:
+        "hay cambios sin commitear; usá intent=commit para asentarlos primero",
+      files: dirty,
+    };
+  }
+
+  const before = await headSha(sb);
+
+  let pull: GitResult | null = null;
+  await withForgeCredentials(sb as never, user, async () => {
+    pull = await runGit(sb, `${gitAuthFlag()} pull --rebase`);
+  });
+  const result = pull as GitResult | null;
+  if (!result || result.code !== 0) {
+    const detail = firstLines(
+      result?.stderr || result?.stdout || "el pull no se intentó",
+      4,
+    );
+    if (await rebaseInProgress(sb)) {
+      return {
+        status: "conflict",
+        files: await unmergedFiles(sb),
+        detail,
+      };
+    }
+    return { status: "pull_failed", detail };
+  }
+
+  const after = await headSha(sb);
+  if (after === before) {
+    return { status: "clean", reason: "el remoto no trajo nada nuevo" };
+  }
+  return { status: "pulled", sha: after };
 }
 
 /**

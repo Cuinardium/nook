@@ -244,6 +244,21 @@ export function commitResultCard(output: CommitOutput): string {
         .filter(Boolean)
         .join("\n");
 
+    case "pulled":
+      return (
+        `⬇️ <b>Remoto al día</b> · <code>${escapeHtml(output.sha)}</code>\n` +
+        `<i>traje lo nuevo del remoto, sin pushear nada</i>`
+      );
+
+    case "pull_failed":
+      return [
+        `⚠️ <b>No pude traer del remoto</b>`,
+        `el repo local quedó como estaba.`,
+        output.detail ? details(escapeHtml(output.detail)) : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+
     case "clean":
       return `ℹ️ Nada para hacer — ${escapeHtml(output.reason)}.`;
 
