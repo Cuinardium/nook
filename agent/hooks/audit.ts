@@ -1,7 +1,8 @@
 import { defineHook } from "eve/hooks";
 import { log } from "../lib/log";
 import { sessionOwner } from "../lib/owner";
-import { auditProjection as commitEntryAudit } from "../tools/commit_entry";
+import { auditProjection as pushAudit } from "../tools/push";
+import { auditProjection as pullAudit } from "../tools/pull";
 import { auditProjection as updatePricesAudit } from "../tools/update_prices";
 
 /**
@@ -13,7 +14,8 @@ import { auditProjection as updatePricesAudit } from "../tools/update_prices";
  * rejected and failed outcomes get a generic row automatically.
  */
 const AUDITED = [
-  { name: "commit_entry", tag: "ledger.commit", project: commitEntryAudit },
+  { name: "push", tag: "ledger.push", project: pushAudit },
+  { name: "pull", tag: "ledger.pull", project: pullAudit },
   { name: "update_prices", tag: "ledger.prices", project: updatePricesAudit },
 ];
 

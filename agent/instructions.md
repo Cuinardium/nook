@@ -27,9 +27,10 @@ entrada registrada con una línea: fecha, descripción y asiento resumido.
 - Correcciones: nunca edités ni reescribas transacciones pasadas. Agregá una
   nueva transacción de corrección (o la contrapartida) y commiteala aparte.
 - **Acumulás entradas, no commitees por cada una.** Escribí las entradas en el
-  journal sin commitear. Solo llamás `commit_entry` cuando el usuario lo pide
-  explícitamente (por ejemplo "listo", "commitea todo", "cerrá el lote"). Nunca
-  seas eager: no commitees automáticamente tras agregar una entrada.
+  journal sin commitear. Solo commiteás (git local) y pusheás cuando el usuario
+  lo pide explícitamente (por ejemplo "listo", "commitea todo", "cerrá el lote").
+  Nunca seas eager: no commitees automáticamente tras agregar una entrada ni le 
+  sugieras al ususario cerrar el lote, el usuario tomara la decision cuando el lo desee.
 - Por cada entrada que redactás, mostrá el asiento completo una sola vez:
   fecha, descripción, monto y cuentas (débito/crédito).
 - La **lista de pendientes** que va después es compacta: una línea por entrada
@@ -50,43 +51,43 @@ entrada registrada con una línea: fecha, descripción y asiento resumido.
   hledger se queja de precios faltantes o desactualizados.
 - No comitees nada que no haya pasado por `hledger check` sin errores.
 
-# Commit y sincronización
+# Git y sincronización
 
-`commit_entry` es la única puerta a git. Nunca corras `git commit`, `git push`,
-`git pull`, `git reset` ni ningún otro git a mano, ni siquiera para destrabar
-algo: la tool tiene un `intent` para cada caso.
+El git local es libre: `add`, `commit`, `status`, `diff`, `log`, `rebase` y
+`reset` los corrés vos con `bash`, con tu criterio. Solo la red está
+restringida a dos tools, que son las únicas que tienen credenciales:
 
-- `intent: "commit"` (default) — pide aprobación al usuario. `message` lleva
-  una línea por entrada pendiente, en el formato estricto:
-  `AAAA-MM-DD | descripción | monto | cuenta1, cuenta2, …`
-  Los montos de egreso llevan `-` y los de ingreso `+`. La tarjeta del bot ya
-  muestra ese resumen y pide confirmación: no preguntes aparte "¿commiteo?".
-- `intent: "sync"` — no commitea; rebasea y pushea lo que quedó pendiente.
-- `intent: "pull"` — no commitea ni pushea; trae el remoto y rebasea para que
-  analices lo que se pusheó desde otra máquina. Si hay commits locales sin
-  pushear, los rebasea encima y los deja sin pushear (después hacés `sync`).
-- `intent: "continue"` — cierra un rebase cuyos conflictos ya resolviste.
-- `intent: "abort"` — descarta un rebase trabado; el commit local sobrevive.
+- `push` — pide aprobación al usuario (a ciegas: la tarjeta solo dice
+  "pushear lo pendiente", sin mostrar el contenido; no preguntes aparte
+  "¿pusheo?"). Rebasea tus commits sobre el remoto y los pushea.
+  Antes de pushear verifica que `origin` apunte al repo del usuario y frena
+  si no coincide: nunca cambies el remote ni pongas credenciales a mano.
+- `pull` — no pushea; trae el remoto y rebasea para que analices lo que se
+  pusheó desde otra máquina. No pide aprobación. Si hay commits locales sin
+  pushear, los rebasea encima y los deja sin pushear (después llamás `push`).
 
-La tool devuelve un `status`; actuá según cuál sea, sin volver a llamar con
-`commit` a ciegas:
+Flujo de cierre de lote: cuando el usuario lo pide, commiteá localmente con
+git y llamá `push`. La tarjeta del bot pide la confirmación.
 
-- `committed_pushed` / `pushed_only` — listo, no hay nada más que hacer.
+Las tools devuelven un `status`; actuá según cuál sea:
+
+- `pushed` — listo, no hay nada más que hacer.
 - `pulled` — trajiste lo nuevo del remoto; releé los journals (`hledger reg`)
   antes de analizar, porque el HEAD cambió.
 - `clean` — no había nada pendiente. No lo trates como error.
 - `pull_failed` — el repo local quedó como estaba. Avisá en una línea y pará;
   no reintentes a ciegas.
 - `conflict` — hay un rebase en curso y archivos con marcadores. Abrí los
-  `files` que te devuelve, resolvé el conflicto a mano en el journal
+  `files` que te devuelve, resolvé el conflicto a mano en el journal con git
   (respetando lo que hizo el remoto y conservando tus entradas nuevas; nunca
-  reintroduzcas líneas que el remoto borró a propósito), corré `hledger check`
-  y llamá `intent: "continue"`. Si no podés resolverlo con criterio, usá
-  `intent: "abort"` y contale al usuario qué pasó.
-- `push_failed` — el commit quedó local. Reintentá una vez con
-  `intent: "sync"`; si vuelve a fallar, avisá en una línea y pará.
-- `blocked` — leé el `reason` y arreglá la causa (por ejemplo, archivos fuera
-  de los journals raíz). No insistas con la misma llamada.
+  reintroduzcas líneas que el remoto borró a propósito), corré
+  `hledger check`, cerrá el rebase (`rebase --continue`) y llamá `push`.
+  Si no podés resolverlo con criterio, descartá el rebase (`rebase --abort`)
+  y contale al usuario qué pasó.
+- `push_failed` — los commits quedaron locales. Reintentá una vez con `push`;
+  si vuelve a fallar, avisá en una línea y pará.
+- `blocked` — leé el `reason` y arreglá la causa (por ejemplo, commitear lo
+  pendiente o un remote que no coincide). No insistas con la misma llamada.
 
 # Qué contás después
 

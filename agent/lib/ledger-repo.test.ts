@@ -1,12 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
-  abortRebase,
-  type CommandRunner,
-  commitAndSync,
-  continueRebase,
   pullOnly,
-  syncOnly,
+  pushPending,
+  type CommandRunner,
 } from "./ledger-repo.ts";
 import type { NookUser } from "./users.ts";
 
@@ -61,60 +58,144 @@ const SHA: Rule = {
   match: /rev-parse --short HEAD/,
   replies: [{ stdout: "abc1234\n" }],
 };
-const STAGED_JOURNAL: Rule = {
-  match: /diff --cached --name-only/,
-  replies: [{ stdout: "2026.journal\n" }],
+const REMOTE_OK: Rule[] = [
+  {
+    match: /remote get-url --push/,
+    replies: [{ stdout: "https://git.example.org/cuini/ledger\n" }],
+  },
+  {
+    match: /remote get-url/,
+    replies: [{ stdout: "https://git.example.org/cuini/ledger\n" }],
+  },
+];
+const CLEAN_TREE: Rule = {
+  match: /status --porcelain/,
+  replies: [{ stdout: "" }],
 };
 const PUSH_OK: Rule = { match: /push/, replies: [{ exitCode: 0 }] };
 const PULL_OK: Rule = { match: /pull --rebase/, replies: [{ exitCode: 0 }] };
 
-describe("commitAndSync", () => {
-  it("commits the journal and pushes it", async () => {
+describe("pushPending", () => {
+  it("rebases and pushes pending commits", async () => {
     const sb = fakeRunner([
-      NO_REBASE,
-      {
-        match: /status --porcelain/,
-        replies: [{ stdout: " M 2026.journal\n" }, { stdout: "M  2026.journal\n" }],
-      },
-      STAGED_JOURNAL,
-      SHA,
-      PULL_OK,
-      PUSH_OK,
-    ]);
-
-    const out = await commitAndSync(sb, USER, "2026-08-25 | Cafe | -4500 | x, y");
-
-    assert.deepEqual(out, { status: "committed_pushed", sha: "abc1234" });
-    assert.ok(sb.commands.some((c) => c.includes("commit -F")));
-  });
-
-  it("pushes instead of stalling when the entries are already committed", async () => {
-    // The regression from the failed-push chat: the worktree is clean because
-    // an earlier attempt committed, and the retry must push, not give up.
-    const sb = fakeRunner([
-      NO_REBASE,
-      { match: /status --porcelain/, replies: [{ stdout: "" }] },
+      ...REMOTE_OK,
+      CLEAN_TREE,
       { match: /rev-list --count/, replies: [{ stdout: "1\n" }] },
       SHA,
       PULL_OK,
       PUSH_OK,
     ]);
 
-    const out = await commitAndSync(sb, USER, "cualquiera");
+    const out = await pushPending(sb, USER);
 
-    assert.deepEqual(out, { status: "pushed_only", sha: "abc1234" });
-    assert.ok(!sb.commands.some((c) => c.includes("commit -F")));
+    assert.deepEqual(out, { status: "pushed", sha: "abc1234" });
+  });
+
+  it("reports a repo that is already in sync", async () => {
+    const sb = fakeRunner([
+      ...REMOTE_OK,
+      CLEAN_TREE,
+      { match: /rev-list --count/, replies: [{ stdout: "0\n" }] },
+    ]);
+
+    const out = await pushPending(sb, USER);
+
+    assert.equal(out.status, "clean");
+    assert.ok(!sb.commands.some((c) => c.includes("pull --rebase")));
+  });
+
+  it("blocks on a dirty worktree", async () => {
+    const sb = fakeRunner([
+      ...REMOTE_OK,
+      { match: /status --porcelain/, replies: [{ stdout: " M 2026.journal\n" }] },
+    ]);
+
+    const out = await pushPending(sb, USER);
+
+    assert.equal(out.status, "blocked");
+    assert.ok(!sb.commands.some((c) => c.includes("pull --rebase")));
+  });
+
+  it("ignores price caches and .gitignore when checking dirt", async () => {
+    const sb = fakeRunner([
+      ...REMOTE_OK,
+      {
+        match: /status --porcelain/,
+        replies: [{ stdout: " M precios/dolares.journal\n M .gitignore\n" }],
+      },
+      { match: /rev-list --count/, replies: [{ stdout: "0\n" }] },
+    ]);
+
+    const out = await pushPending(sb, USER);
+
+    assert.equal(out.status, "clean");
+  });
+
+  it("blocks when origin points elsewhere", async () => {
+    const sb = fakeRunner([
+      {
+        match: /remote get-url/,
+        replies: [{ stdout: "https://evil.example.org/x/ledger\n" }],
+      },
+    ]);
+
+    const out = await pushPending(sb, USER);
+
+    assert.equal(out.status, "blocked");
+    assert.match(
+      out.status === "blocked" ? out.reason : "",
+      /origin apunta a/,
+    );
+    assert.ok(!sb.commands.some((c) => c.includes("pull --rebase")));
+    assert.ok(!sb.commands.some((c) => /(^|\s)push(\s|$)/.test(c)));
+  });
+
+  it("blocks when the push URL diverges from the fetch URL", async () => {
+    const sb = fakeRunner([
+      {
+        match: /remote get-url --push/,
+        replies: [{ stdout: "https://evil.example.org/x/ledger\n" }],
+      },
+      {
+        match: /remote get-url/,
+        replies: [{ stdout: "https://git.example.org/cuini/ledger\n" }],
+      },
+    ]);
+
+    const out = await pushPending(sb, USER);
+
+    assert.equal(out.status, "blocked");
+    assert.match(
+      out.status === "blocked" ? out.reason : "",
+      /push-URL/,
+    );
+  });
+
+  it("accepts a .git suffix on the remote", async () => {
+    const sb = fakeRunner([
+      {
+        match: /remote get-url/,
+        replies: [
+          { stdout: "https://git.example.org/cuini/ledger.git\n" },
+          { stdout: "https://git.example.org/cuini/ledger.git\n" },
+        ],
+      },
+      CLEAN_TREE,
+      { match: /rev-list --count/, replies: [{ stdout: "0\n" }] },
+    ]);
+
+    const out = await pushPending(sb, USER);
+
+    assert.equal(out.status, "clean");
   });
 
   it("reports a conflict instead of leaking git output", async () => {
     const sb = fakeRunner([
-      { match: /^test -d/, replies: [{ exitCode: 1 }, { exitCode: 0 }] },
-      {
-        match: /status --porcelain/,
-        replies: [{ stdout: " M 2026.journal\n" }, { stdout: "M  2026.journal\n" }],
-      },
-      STAGED_JOURNAL,
+      ...REMOTE_OK,
+      CLEAN_TREE,
+      { match: /rev-list --count/, replies: [{ stdout: "1\n" }] },
       SHA,
+      REBASING,
       {
         match: /pull --rebase/,
         replies: [{ exitCode: 1, stderr: "CONFLICT (content): merge conflict\nhint: fix them up" }],
@@ -125,7 +206,7 @@ describe("commitAndSync", () => {
       },
     ]);
 
-    const out = await commitAndSync(sb, USER, "Cafe");
+    const out = await pushPending(sb, USER);
 
     assert.equal(out.status, "conflict");
     assert.deepEqual(out.status === "conflict" ? out.files : [], [
@@ -135,12 +216,9 @@ describe("commitAndSync", () => {
 
   it("retries the cycle when the remote moved mid-push", async () => {
     const sb = fakeRunner([
-      NO_REBASE,
-      {
-        match: /status --porcelain/,
-        replies: [{ stdout: " M 2026.journal\n" }, { stdout: "M  2026.journal\n" }],
-      },
-      STAGED_JOURNAL,
+      ...REMOTE_OK,
+      CLEAN_TREE,
+      { match: /rev-list --count/, replies: [{ stdout: "1\n" }] },
       SHA,
       PULL_OK,
       {
@@ -152,20 +230,17 @@ describe("commitAndSync", () => {
       },
     ]);
 
-    const out = await commitAndSync(sb, USER, "Cafe");
+    const out = await pushPending(sb, USER);
 
-    assert.equal(out.status, "committed_pushed");
+    assert.equal(out.status, "pushed");
     assert.equal(sb.commands.filter((c) => c.includes("pull --rebase")).length, 2);
   });
 
-  it("keeps a failed push as a local commit", async () => {
+  it("keeps a failed push as local commits", async () => {
     const sb = fakeRunner([
-      NO_REBASE,
-      {
-        match: /status --porcelain/,
-        replies: [{ stdout: " M 2026.journal\n" }, { stdout: "M  2026.journal\n" }],
-      },
-      STAGED_JOURNAL,
+      ...REMOTE_OK,
+      CLEAN_TREE,
+      { match: /rev-list --count/, replies: [{ stdout: "1\n" }] },
       SHA,
       PULL_OK,
       {
@@ -174,101 +249,22 @@ describe("commitAndSync", () => {
       },
     ]);
 
-    const out = await commitAndSync(sb, USER, "Cafe");
+    const out = await pushPending(sb, USER);
 
     assert.equal(out.status, "push_failed");
     assert.equal(out.status === "push_failed" ? out.sha : "", "abc1234");
-    // One failed auth is not worth three attempts.
-    assert.equal(sb.commands.filter((c) => c.includes("push")).length, 1);
-  });
-
-  it("refuses changes outside the root journals", async () => {
-    const sb = fakeRunner([
-      NO_REBASE,
-      {
-        match: /status --porcelain/,
-        replies: [
-          { stdout: " M bin/tool.sh\n" },
-          { stdout: " M bin/tool.sh\n" },
-        ],
-      },
-    ]);
-
-    const out = await commitAndSync(sb, USER, "Cafe");
-
-    assert.equal(out.status, "blocked");
-    assert.ok(sb.commands.some((c) => c.endsWith("reset")));
-  });
-});
-
-describe("continueRebase", () => {
-  it("refuses while conflict markers survive", async () => {
-    const sb = fakeRunner([
-      REBASING,
-      {
-        match: /diff --name-only --diff-filter=U/,
-        replies: [{ stdout: "2026.journal\n" }],
-      },
-      { match: /^grep -lE/, replies: [{ stdout: "/workspace/ledger/2026.journal\n" }] },
-    ]);
-
-    const out = await continueRebase(sb, USER);
-
-    assert.equal(out.status, "blocked");
-    assert.deepEqual(out.status === "blocked" ? out.files : [], [
-      "2026.journal",
-    ]);
-    assert.ok(!sb.commands.some((c) => c.includes("rebase --continue")));
-  });
-
-  it("finishes the rebase and pushes once the journal is clean", async () => {
-    const sb = fakeRunner([
-      { match: /^test -d/, replies: [{ exitCode: 0 }] },
-      {
-        match: /diff --name-only --diff-filter=U/,
-        replies: [{ stdout: "2026.journal\n" }],
-      },
-      { match: /^grep -lE/, replies: [{ stdout: "" }] },
-      SHA,
-      PULL_OK,
-      PUSH_OK,
-    ]);
-
-    const out = await continueRebase(sb, USER);
-
-    assert.deepEqual(out, { status: "pushed_only", sha: "abc1234" });
-    assert.ok(sb.commands.some((c) => c.includes("rebase --continue")));
-  });
-});
-
-describe("syncOnly", () => {
-  it("blocks on a dirty worktree", async () => {
-    const sb = fakeRunner([
-      { match: /status --porcelain/, replies: [{ stdout: " M 2026.journal\n" }] },
-    ]);
-
-    const out = await syncOnly(sb, USER);
-
-    assert.equal(out.status, "blocked");
-  });
-
-  it("reports a repo that is already in sync", async () => {
-    const sb = fakeRunner([
-      { match: /status --porcelain/, replies: [{ stdout: "" }] },
-      { match: /rev-list --count/, replies: [{ stdout: "0\n" }] },
-    ]);
-
-    const out = await syncOnly(sb, USER);
-
-    assert.equal(out.status, "clean");
+    // One failed auth is not worth three attempts (`get-url --push` is a
+    // remote check, not a push).
+    assert.equal(sb.commands.filter((c) => / push$/.test(c)).length, 1);
   });
 });
 
 describe("pullOnly", () => {
   it("brings remote changes without pushing", async () => {
     const sb = fakeRunner([
+      ...REMOTE_OK,
       NO_REBASE,
-      { match: /status --porcelain/, replies: [{ stdout: "" }] },
+      CLEAN_TREE,
       {
         match: /rev-parse --short HEAD/,
         replies: [{ stdout: "aaa1111\n" }, { stdout: "bbb2222\n" }],
@@ -284,12 +280,7 @@ describe("pullOnly", () => {
   });
 
   it("reports clean when the remote brought nothing new", async () => {
-    const sb = fakeRunner([
-      NO_REBASE,
-      { match: /status --porcelain/, replies: [{ stdout: "" }] },
-      SHA,
-      PULL_OK,
-    ]);
+    const sb = fakeRunner([...REMOTE_OK, NO_REBASE, CLEAN_TREE, SHA, PULL_OK]);
 
     const out = await pullOnly(sb, USER);
 
@@ -298,6 +289,7 @@ describe("pullOnly", () => {
 
   it("blocks on a dirty worktree instead of rebasing over it", async () => {
     const sb = fakeRunner([
+      ...REMOTE_OK,
       NO_REBASE,
       { match: /status --porcelain/, replies: [{ stdout: " M 2026.journal\n" }] },
     ]);
@@ -308,10 +300,25 @@ describe("pullOnly", () => {
     assert.ok(!sb.commands.some((c) => c.includes("pull --rebase")));
   });
 
+  it("blocks when origin points elsewhere", async () => {
+    const sb = fakeRunner([
+      {
+        match: /remote get-url/,
+        replies: [{ stdout: "https://evil.example.org/x/ledger\n" }],
+      },
+    ]);
+
+    const out = await pullOnly(sb, USER);
+
+    assert.equal(out.status, "blocked");
+    assert.ok(!sb.commands.some((c) => c.includes("pull --rebase")));
+  });
+
   it("reports a conflict instead of leaking git output", async () => {
     const sb = fakeRunner([
+      ...REMOTE_OK,
       { match: /^test -d/, replies: [{ exitCode: 1 }, { exitCode: 0 }] },
-      { match: /status --porcelain/, replies: [{ stdout: "" }] },
+      CLEAN_TREE,
       SHA,
       {
         match: /pull --rebase/,
@@ -330,8 +337,9 @@ describe("pullOnly", () => {
 
   it("keeps the local repo untouched when the fetch fails", async () => {
     const sb = fakeRunner([
+      ...REMOTE_OK,
       NO_REBASE,
-      { match: /status --porcelain/, replies: [{ stdout: "" }] },
+      CLEAN_TREE,
       SHA,
       {
         match: /pull --rebase/,
@@ -346,6 +354,7 @@ describe("pullOnly", () => {
 
   it("surfaces a rebase left over from an earlier attempt", async () => {
     const sb = fakeRunner([
+      ...REMOTE_OK,
       REBASING,
       {
         match: /diff --name-only --diff-filter=U/,
@@ -357,25 +366,5 @@ describe("pullOnly", () => {
 
     assert.equal(out.status, "conflict");
     assert.ok(!sb.commands.some((c) => c.includes("pull --rebase")));
-  });
-});
-
-describe("abortRebase", () => {
-  it("is a no-op when no rebase is running", async () => {
-    const sb = fakeRunner([NO_REBASE]);
-
-    const out = await abortRebase(sb);
-
-    assert.equal(out.status, "clean");
-    assert.ok(!sb.commands.some((c) => c.includes("rebase --abort")));
-  });
-
-  it("drops a stuck rebase and keeps the commit", async () => {
-    const sb = fakeRunner([REBASING]);
-
-    const out = await abortRebase(sb);
-
-    assert.equal(out.status, "aborted");
-    assert.ok(sb.commands.some((c) => c.includes("rebase --abort")));
   });
 });

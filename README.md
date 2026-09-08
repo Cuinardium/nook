@@ -7,7 +7,7 @@ Nook is a personal bookkeeping assistant on Telegram, built with the [eve](https
 - **Channel**: Telegram (`agent/channels/telegram.ts`). Confirmations use inline Approve/Reject buttons via eve's human-in-the-loop rendering.
 - **Model**: OpenCode Go models through an OpenAI-compatible endpoint (`agent/agent.ts`).
 - **Sandbox**: each turn runs in a Docker sandbox with the user's ledger repo cloned at `/workspace/ledger` and `hledger` available.
-- **Approval flow**: the assistant drafts the full transaction in chat first, then calls `commit_entry` (`agent/tools/commit_entry.ts`), which is gated by `approval: always()` and runs `hledger check`, commits, and pushes via the user's forge token.
+- **Approval flow**: the assistant drafts the full transaction in chat first and commits locally with git; `push` (`agent/tools/push.ts`) is gated by `approval: always()` and rebases + pushes via the user's forge token. `pull` (`agent/tools/pull.ts`) fetches + rebases without pushing. Both verify `origin` still points at the user's repo before touching the network.
 - **Prices**: `update_prices` (`agent/tools/update_prices.ts`) refreshes commodity prices before valuing positions in ARS.
 - **Hooks**: `agent/hooks/audit.ts` logs JSON audit lines to stdout; `agent/hooks/owner.ts` handles owner notifications.
 - **Skill**: `agent/skills/hledger-entry` holds the journal-writing conventions.

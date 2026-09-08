@@ -1,96 +1,71 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
-  commitApprovalCard,
-  commitRejectedCard,
-  commitResultCard,
+  isPushApproval,
+  pushApprovalCard,
+  pushRejectedCard,
+  syncResultCard,
 } from "./cards.ts";
 
-const BATCH = [
-  "2026-08-25 | Cafe | -4500 | gastos:salidas:comida, activos:cash:ARS",
-  "2026-08-25 | Remera | -69000 | gastos:ropa, activos:bancos:bbva:ARS",
-].join("\n");
-
-describe("commitApprovalCard", () => {
-  it("keeps one short line per entry and folds the legs away", () => {
-    const card = commitApprovalCard(BATCH);
-    const visible = card.split("<blockquote expandable>")[0] ?? "";
-
-    assert.match(visible, /💸 <b>Cafe<\/b> · <code>-4\.500<\/code>/);
-    assert.match(visible, /💸 <b>Remera<\/b> · <code>-69\.000<\/code>/);
-    // Account legs belong in the collapsed part, not in the card body.
-    assert.ok(!visible.includes("gastos:salidas:comida"));
-    assert.match(card, /<blockquote expandable>[\s\S]*gastos:ropa/);
-  });
-
-  it("adds the net of the batch when the commodity is shared", () => {
-    assert.match(commitApprovalCard(BATCH), /Neto <code>-73\.500<\/code>/);
-  });
-
-  it("skips the net when the entries mix commodities", () => {
-    const mixed = [
-      "2026-08-25 | Cafe | -$4500 | a, b",
-      "2026-08-25 | Server | -USD20 | c, d",
-    ].join("\n");
-
-    assert.ok(!commitApprovalCard(mixed).includes("Neto"));
-  });
-
-  it("uses an income emoji for a positive amount", () => {
-    const card = commitApprovalCard("2026-08-25 | Sueldo | +900000 | a, b");
-    assert.match(card, /💰 <b>Sueldo<\/b>/);
-  });
-
-  it("falls back to a raw block when a line is malformed", () => {
-    const card = commitApprovalCard("esto no tiene el formato");
-    assert.match(card, /<pre>esto no tiene el formato<\/pre>/);
-  });
-
-  it("escapes model-derived text", () => {
-    const card = commitApprovalCard("2026-08-25 | <b>x</b> | -1 | a, b");
-    assert.ok(!card.includes("<b>x</b>"));
-    assert.match(card, /&lt;b&gt;x&lt;\/b&gt;/);
+describe("pushApprovalCard", () => {
+  it("asks for the push without showing content", () => {
+    const card = pushApprovalCard();
+    assert.match(card, /Confirmar push/);
+    assert.match(card, /Confirmá y lo pusheo/);
   });
 
   it("never offers to do the thing it is already asking about", () => {
-    assert.ok(!/decime|avisame|¿commiteo/i.test(commitApprovalCard(BATCH)));
+    assert.ok(!/decime|avisame|¿pusheo/i.test(pushApprovalCard()));
   });
 });
 
-describe("commitResultCard", () => {
-  it("distinguishes a fresh commit from a late push", () => {
-    assert.match(
-      commitResultCard({ status: "committed_pushed", sha: "d3f207a" }),
-      /Asentado/,
+describe("isPushApproval", () => {
+  it("matches only push tool approvals", () => {
+    assert.equal(
+      isPushApproval({ kind: "tool-approval", action: { toolName: "push" } }),
+      true,
     );
+    assert.equal(
+      isPushApproval({ kind: "tool-approval", action: { toolName: "pull" } }),
+      false,
+    );
+    assert.equal(
+      isPushApproval({ kind: "question", action: { toolName: "push" } }),
+      false,
+    );
+  });
+});
+
+describe("syncResultCard", () => {
+  it("announces a push", () => {
     assert.match(
-      commitResultCard({ status: "pushed_only", sha: "d3f207a" }),
-      /Push al día/,
+      syncResultCard({ status: "pushed", sha: "d3f207a" }),
+      /Pusheado/,
     );
   });
 
   it("reads a conflict as progress and hides the git detail", () => {
-    const card = commitResultCard({
+    const card = syncResultCard({
       status: "conflict",
       files: ["2026.journal"],
       detail: "CONFLICT (content): merge conflict in 2026.journal",
     });
 
-    assert.match(card, /lo estoy resolviendo/);
+    assert.match(card, /resolvelo con git/);
     assert.match(card, /<blockquote expandable>CONFLICT/);
   });
 
   it("announces a pull without implying a push", () => {
-    const card = commitResultCard({ status: "pulled", sha: "bbb2222" });
+    const card = syncResultCard({ status: "pulled", sha: "bbb2222" });
 
     assert.match(card, /Remoto al día/);
     assert.match(card, /<code>bbb2222<\/code>/);
     assert.match(card, /sin pushear/);
-    assert.ok(!/Push al día|commiteado/i.test(card));
+    assert.ok(!/Pusheado/i.test(card));
   });
 
   it("says the local repo was left alone when the pull failed", () => {
-    const card = commitResultCard({
+    const card = syncResultCard({
       status: "pull_failed",
       detail: "fatal: Authentication failed",
     });
@@ -100,18 +75,29 @@ describe("commitResultCard", () => {
   });
 
   it("says where a commit stands when the push failed", () => {
-    const card = commitResultCard({
+    const card = syncResultCard({
       status: "push_failed",
       sha: "4e622ee",
       detail: "fatal: Authentication failed",
     });
 
     assert.match(card, /<code>4e622ee<\/code>/);
-    assert.match(card, /push pendiente/);
+    assert.match(card, /sigue local/);
+  });
+
+  it("reads a blocked remote as a stop, not an error", () => {
+    const card = syncResultCard({
+      status: "blocked",
+      reason: "origin apunta a otro lado",
+      files: [],
+    });
+
+    assert.match(card, /Frené la operación/);
+    assert.match(card, /origin apunta/);
   });
 
   it("escapes a detail that carries markup", () => {
-    const card = commitResultCard({
+    const card = syncResultCard({
       status: "push_failed",
       sha: "4e622ee",
       detail: "hint: <not-a-tag>",
@@ -121,9 +107,8 @@ describe("commitResultCard", () => {
   });
 });
 
-describe("commitRejectedCard", () => {
-  it("tells the truth about a commit that stayed local", () => {
-    assert.match(commitRejectedCard("4e622ee"), /sigue local, sin pushear/);
-    assert.match(commitRejectedCard(), /no se tocó el repo/);
+describe("pushRejectedCard", () => {
+  it("tells the truth about a denied push", () => {
+    assert.match(pushRejectedCard(), /no se pusheó nada/);
   });
 });

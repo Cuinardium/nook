@@ -5,15 +5,14 @@ import {
   type TelegramMessageBody,
 } from "eve/channels/telegram";
 import {
-  commitApprovalCard,
-  commitMessageOf,
-  commitRejectedCard,
-  commitResultCard,
   escapeHtml,
-  isCommitApproval,
+  isPushApproval,
+  pushApprovalCard,
+  pushRejectedCard,
+  syncResultCard,
 } from "../lib/cards";
 import { getUserByTelegramId } from "../lib/users";
-import { outputSchema } from "../tools/commit_entry";
+import { outcomeSchema as outputSchema } from "../lib/ledger-repo";
 
 // Telegram's `typing` chat action expires after ~5s, so while a tool runs we
 // refresh it on an interval. Keyed by chat id because one process can serve
@@ -21,14 +20,14 @@ import { outputSchema } from "../tools/commit_entry";
 // the commit push, acting as the in-progress spinner.
 const TYPING_REFRESH_MS = 4000;
 const typingTimers = new Map<string, ReturnType<typeof setInterval>>();
-// Message id of the active commit approval card, so we can strip its keyboard
+
+// Message id of the active push approval card, so we can strip its keyboard
 // once the user confirms (prevents a double-tap).
 const approvalCardId = new Map<string, string>();
-// Sha of a commit that exists locally but never reached the remote. Cancel
-// copy depends on it: with one pending, "no se tocó el repo" would be false.
-const pendingCommitSha = new Map<string, string>();
 
-type ChannelHandle = { telegram: { chatId: string; startTyping(): Promise<void> } };
+type ChannelHandle = {
+  telegram: { chatId: string; startTyping(): Promise<void> };
+};
 
 function chatIdOf(channel: ChannelHandle): string {
   return channel.telegram.chatId || "";
@@ -64,7 +63,11 @@ function startTypingKeepAlive(channel: ChannelHandle): void {
 type HtmlBody = TelegramMessageBody & { parse_mode: "HTML" };
 
 function htmlPost(
-  channel: { telegram: { post(body: TelegramMessageBody | string): Promise<{ id: string }> } },
+  channel: {
+    telegram: {
+      post(body: TelegramMessageBody | string): Promise<{ id: string }>;
+    };
+  },
   body: HtmlBody,
 ): Promise<{ id: string }> {
   return channel.telegram.post(body as TelegramMessageBody);
@@ -117,9 +120,9 @@ export default telegramChannel({
       for (const request of data.requests) {
         const rendered = renderTelegramInputRequest(request, channel.state);
 
-        if (isCommitApproval(request)) {
+        if (isPushApproval(request)) {
           const posted = await htmlPost(channel as never, {
-            text: commitApprovalCard(commitMessageOf(request)),
+            text: pushApprovalCard(),
             reply_markup: rendered.replyMarkup,
             parse_mode: "HTML",
           });
@@ -146,7 +149,15 @@ export default telegramChannel({
     async "action.result"(data, channel) {
       stopTypingKeepAlive(channel as unknown as ChannelHandle);
       const action = data.result;
-      if (action.kind !== "tool-result" || action.toolName !== "commit_entry") {
+
+      if (action.kind !== "tool-result") {
+        return;
+      }
+
+      const isSyncAction =
+        action.toolName === "push" || action.toolName === "pull";
+
+      if (!isSyncAction) {
         return;
       }
 
@@ -159,15 +170,14 @@ export default telegramChannel({
         approvalCardId.delete(channel.telegram.chatId);
       }
 
-      const chatId = channel.telegram.chatId;
-
       if (data.status === "rejected") {
         await htmlPost(channel as never, {
-          text: commitRejectedCard(pendingCommitSha.get(chatId)),
+          text: pushRejectedCard(),
           parse_mode: "HTML",
         });
         return;
       }
+
       if (data.status === "failed" || data.error) {
         const detail = data.error?.message ?? "error desconocido";
         await htmlPost(channel as never, {
@@ -181,20 +191,13 @@ export default telegramChannel({
       const parsed = outputSchema.safeParse(action.output);
       if (!parsed.success) {
         await channel.telegram.post(
-          "⚠️ commit_entry devolvió una salida inesperada.",
+          "⚠️ la herramienta devolvió una salida inesperada.",
         );
         return;
       }
-      // Track whether a commit is sitting local-only, for the cancel copy.
-      const status = parsed.data.status;
-      if (status === "push_failed") {
-        pendingCommitSha.set(chatId, parsed.data.sha);
-      } else if (status === "committed_pushed" || status === "pushed_only") {
-        pendingCommitSha.delete(chatId);
-      }
 
       await htmlPost(channel as never, {
-        text: commitResultCard(parsed.data),
+        text: syncResultCard(parsed.data),
         parse_mode: "HTML",
       });
     },

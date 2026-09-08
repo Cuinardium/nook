@@ -1,11 +1,12 @@
 /**
- * Every git operation nook performs on /workspace/ledger, as one small state
- * machine over a command runner.
+ * Every networked git operation nook performs on /workspace/ledger.
  *
- * It lives apart from the tool so the interesting part — what happens when a
- * push races another machine — is exercisable without a sandbox, a real repo,
- * or an approval round trip. The tool layer only resolves the user and picks
- * an intent.
+ * Local git (add, commit, status, rebase --continue…) is free: the agent runs
+ * it via `bash` and nook trusts its criteria. Only the network goes through
+ * here, wrapped in per-operation credentials, with one hard enforcement the
+ * agent cannot talk its way around: the `origin` remote must point at the
+ * user's own repo. That keeps a tampered remote (`remote set-url`, an extra
+ * push URL) from exfiltrating the ledger on an approved push.
  *
  * Contract: no caller of this module ever sees raw git output. Each entry
  * point returns a `LedgerOutcome`, and the channel renders one card per
@@ -17,16 +18,12 @@ import { gitAuthFlag, withForgeCredentials } from "./forge.ts";
 import type { NookUser } from "./users.ts";
 
 export const REPO = "/workspace/ledger";
-const JOURNAL_PATH = /^[\w.-]+\.journal$/;
 
 /**
- * Paths the agent may leave dirty without blocking a commit/push.
+ * Paths the agent may leave dirty without blocking a push/pull.
  * - `precios/` holds local price caches (dolares.journal, stocks.journal)
- *   that `update_prices` rewrites but must never be staged (only
- *   `:(top)*.journal` is staged).  
- * - `.gitignore` itself: the agent must never stage or push it. If the user
- *   maintains a `precios/` ignore there, it stays a manual user commit —
- *   the agent will not block on a dirty `.gitignore` nor stage it.
+ *   that `update_prices` rewrites but must never be pushed.
+ * - `.gitignore` itself stays a manual user concern.
  */
 function isIgnoredDirtyPath(path: string): boolean {
   return path === ".gitignore" || path.startsWith("precios/");
@@ -34,37 +31,28 @@ function isIgnoredDirtyPath(path: string): boolean {
 
 function isRelevantDirtyLine(line: string): boolean {
   // porcelain: XY<space>path[ -> orig] ; worktree column is line[1]
-  // Filter to commit-relevant dirt: ignore precios/ and .gitignore so
-  // `git status` showing ` M precios/dolares.journal` or ` M .gitignore`
-  // does not trigger the "cambios por fuera de los journals raíz" block.
-  if (line.length < 3 || line[1] === " ") return false;
+  if (line.length < 3 || line[1] === " ") {
+    return false;
+  }
   const raw = line.slice(3).trim();
   // Handle renames: "R  old -> new" — check the destination.
   const arrow = raw.indexOf(" -> ");
   const path = arrow >= 0 ? raw.slice(arrow + 4).trim() : raw;
-  // Strip quotes git adds for odd paths.
   const unquoted =
     path.startsWith('"') && path.endsWith('"') ? path.slice(1, -1) : path;
   return !isIgnoredDirtyPath(unquoted);
 }
+
 /** Rebase+push cycles before giving up on a remote that keeps moving. */
 const PUSH_ATTEMPTS = 3;
 
-export const intentSchema = z
-  .enum(["commit", "sync", "pull", "continue", "abort"])
-  .default("commit");
-
-export type LedgerIntent = z.infer<typeof intentSchema>;
-
 export const outcomeSchema = z.discriminatedUnion("status", [
-  /** New commit created and pushed. */
-  z.object({ status: z.literal("committed_pushed"), sha: z.string() }),
-  /** Nothing new to commit; commits that were pending got pushed. */
-  z.object({ status: z.literal("pushed_only"), sha: z.string() }),
+  /** Pending commits were rebased onto the remote and pushed. */
+  z.object({ status: z.literal("pushed"), sha: z.string() }),
   /** Remote changes were fetched and rebased; nothing was pushed. */
   z.object({ status: z.literal("pulled"), sha: z.string() }),
-  /** The fetch/rebase side of a pull failed (network/auth/no upstream). */
-  z.object({ status: z.literal("pull_failed"), detail: z.string() }),
+  /** Nothing to push, or the remote brought nothing new. */
+  z.object({ status: z.literal("clean"), reason: z.string() }),
   /** Rebase stopped on conflicts. The repo is mid-rebase, awaiting a fix. */
   z.object({
     status: z.literal("conflict"),
@@ -77,16 +65,14 @@ export const outcomeSchema = z.discriminatedUnion("status", [
     sha: z.string(),
     detail: z.string(),
   }),
-  /** Nothing to commit and nothing to push. */
-  z.object({ status: z.literal("clean"), reason: z.string() }),
-  /** Refused: changes outside the root journals, or markers still unresolved. */
+  /** The fetch/rebase side of a pull failed (network/auth/no upstream). */
+  z.object({ status: z.literal("pull_failed"), detail: z.string() }),
+  /** Refused: wrong remote, or a dirty worktree that would block the rebase. */
   z.object({
     status: z.literal("blocked"),
     reason: z.string(),
     files: z.array(z.string()),
   }),
-  /** A stuck rebase was dropped; the local commit survives, unpushed. */
-  z.object({ status: z.literal("aborted"), reason: z.string() }),
 ]);
 
 export type LedgerOutcome = z.infer<typeof outcomeSchema>;
@@ -136,6 +122,39 @@ function lines(text: string): string[] {
   return text.split("\n").filter((line) => line.trim());
 }
 
+function normalizeRemote(url: string): string {
+  return url.trim().replace(/\/+$/, "").replace(/\.git$/, "");
+}
+
+/**
+ * The one enforcement the agent cannot waive: `origin` (fetch and push URLs)
+ * must point at the user's own repo. Returns a reason when it does not.
+ */
+async function remoteMismatch(
+  sb: CommandRunner,
+  user: NookUser,
+): Promise<string | null> {
+  const expected = normalizeRemote(user.repoUrl);
+  const fetch = await runGit(sb, "remote get-url origin");
+  if (fetch.code !== 0) {
+    return "el repo no tiene remote `origin`";
+  }
+  if (normalizeRemote(fetch.stdout) !== expected) {
+    return `origin apunta a ${fetch.stdout.trim()}, esperaba ${user.repoUrl}`;
+  }
+  const push = await runGit(sb, "remote get-url --push origin");
+  if (push.code === 0 && normalizeRemote(push.stdout) !== expected) {
+    return `el push-URL de origin apunta a ${push.stdout.trim()}, esperaba ${user.repoUrl}`;
+  }
+  return null;
+}
+
+async function relevantDirty(sb: CommandRunner): Promise<string[]> {
+  return lines((await runGit(sb, "status --porcelain")).stdout).filter(
+    isRelevantDirtyLine,
+  );
+}
+
 async function rebaseInProgress(sb: CommandRunner): Promise<boolean> {
   const probe = await sb.run({
     command: `test -d ${REPO}/.git/rebase-merge -o -d ${REPO}/.git/rebase-apply`,
@@ -169,9 +188,8 @@ type SyncResult =
 /**
  * Rebase onto the remote, then push. Retries the whole cycle when someone
  * pushed between our rebase and our push, so an ordinary race never reaches
- * the user. On conflict the repo is deliberately left mid-rebase: that is the
- * state `continueRebase` expects, and the only one from which the agent can
- * resolve the journal by hand.
+ * the user. On conflict the repo is deliberately left mid-rebase for the
+ * agent to resolve with local git (edit, `add`, `rebase --continue`).
  */
 async function rebaseAndPush(
   sb: CommandRunner,
@@ -214,40 +232,21 @@ async function rebaseAndPush(
   return outcome;
 }
 
-/** Turns a sync result into an outcome, given whether we just committed. */
-async function finish(
+/** Push pending commits: rebase onto the remote, then push. */
+export async function pushPending(
   sb: CommandRunner,
   user: NookUser,
-  committed: boolean,
 ): Promise<LedgerOutcome> {
-  const sha = await headSha(sb);
-  const result = await rebaseAndPush(sb, user);
-  if (result.kind === "pushed") {
-    // The rebase may have rewritten our commit, so read HEAD again.
-    const finalSha = await headSha(sb);
-    return committed
-      ? { status: "committed_pushed", sha: finalSha }
-      : { status: "pushed_only", sha: finalSha };
+  const mismatch = await remoteMismatch(sb, user);
+  if (mismatch) {
+    return { status: "blocked", reason: mismatch, files: [] };
   }
-  if (result.kind === "conflict") {
-    return { status: "conflict", files: result.files, detail: result.detail };
-  }
-  return { status: "push_failed", sha, detail: result.detail };
-}
 
-/** Push what is already committed; refuses to touch a dirty worktree. */
-export async function syncOnly(
-  sb: CommandRunner,
-  user: NookUser,
-): Promise<LedgerOutcome> {
-  const dirty = lines((await runGit(sb, "status --porcelain")).stdout).filter(
-    isRelevantDirtyLine,
-  );
+  const dirty = await relevantDirty(sb);
   if (dirty.length > 0) {
     return {
       status: "blocked",
-      reason:
-        "hay cambios sin commitear; usá intent=commit para asentarlos primero",
+      reason: "hay cambios sin commitear; commitealos con git antes de pushear",
       files: dirty,
     };
   }
@@ -256,20 +255,34 @@ export async function syncOnly(
     return { status: "clean", reason: "el repo ya está sincronizado" };
   }
 
-  return await finish(sb, user, false);
+  const sha = await headSha(sb);
+  const result = await rebaseAndPush(sb, user);
+  if (result.kind === "pushed") {
+    // The rebase may have rewritten our commits, so read HEAD again.
+    return { status: "pushed", sha: await headSha(sb) };
+  }
+  if (result.kind === "conflict") {
+    return { status: "conflict", files: result.files, detail: result.detail };
+  }
+  return { status: "push_failed", sha, detail: result.detail };
 }
 
 /**
  * Bring remote changes in without pushing anything. For reviewing work pushed
  * from another machine: fetch + rebase, then stop. Local commits (if any)
- * are rebased onto the remote and left unpushed — run `sync` afterwards to
- * push them. Refuses a dirty worktree like `syncOnly` does, and on conflict
- * leaves the repo mid-rebase for `continueRebase`, same as the push path.
+ * are rebased onto the remote and left unpushed — run `push` afterwards to
+ * push them. On conflict the repo is left mid-rebase for the agent to
+ * resolve with local git, same as the push path.
  */
 export async function pullOnly(
   sb: CommandRunner,
   user: NookUser,
 ): Promise<LedgerOutcome> {
+  const mismatch = await remoteMismatch(sb, user);
+  if (mismatch) {
+    return { status: "blocked", reason: mismatch, files: [] };
+  }
+
   if (await rebaseInProgress(sb)) {
     return {
       status: "conflict",
@@ -278,14 +291,11 @@ export async function pullOnly(
     };
   }
 
-  const dirty = lines((await runGit(sb, "status --porcelain")).stdout).filter(
-    isRelevantDirtyLine,
-  );
+  const dirty = await relevantDirty(sb);
   if (dirty.length > 0) {
     return {
       status: "blocked",
-      reason:
-        "hay cambios sin commitear; usá intent=commit para asentarlos primero",
+      reason: "hay cambios sin commitear; commitealos con git antes de traer",
       files: dirty,
     };
   }
@@ -297,7 +307,7 @@ export async function pullOnly(
     pull = await runGit(sb, `${gitAuthFlag()} pull --rebase`);
   });
   const result = pull as GitResult | null;
-  if (!result || result.code !== 0) {
+  if (result?.code !== 0) {
     const detail = firstLines(
       result?.stderr || result?.stdout || "el pull no se intentó",
       4,
@@ -317,141 +327,4 @@ export async function pullOnly(
     return { status: "clean", reason: "el remoto no trajo nada nuevo" };
   }
   return { status: "pulled", sha: after };
-}
-
-/**
- * Stage the root journals, commit them, and sync. A worktree with nothing new
- * is not a dead end: the entries may already be committed from an attempt
- * whose push failed, so it falls through to a push.
- */
-export async function commitAndSync(
-  sb: CommandRunner,
-  user: NookUser,
-  message: string,
-): Promise<LedgerOutcome> {
-  if (await rebaseInProgress(sb)) {
-    return {
-      status: "conflict",
-      files: await unmergedFiles(sb),
-      detail: "hay un rebase en curso de un intento anterior",
-    };
-  }
-
-  const status = await runGit(sb, "status --porcelain");
-  const relevantStatus = lines(status.stdout).filter(isRelevantDirtyLine);
-  if (relevantStatus.length === 0) {
-    return await syncOnly(sb, user);
-  }
-
-  // The message travels as a file so it is never shell-interpolated.
-  await sb.writeTextFile({
-    path: "/workspace/.commit-msg",
-    content: `${message}\n`,
-  });
-
-  await git(sb, "add -- ':(top)*.journal'");
-
-  // Anything still dirty in the WORKTREE column was not staged by the glob.
-  // Filter out precios/ and .gitignore — both are local-only and must not
-  // trigger the "cambios por fuera" block.
-  const leftover = await runGit(sb, "status --porcelain");
-  const unstaged = leftover.stdout
-    .split("\n")
-    .filter(isRelevantDirtyLine);
-
-  if (unstaged.length > 0) {
-    await git(sb, "reset");
-    return {
-      status: "blocked",
-      reason: "hay cambios por fuera de los journals raíz",
-      files: unstaged,
-    };
-  }
-
-  // Verify what is actually staged before committing.
-  const staged = lines(await git(sb, "diff --cached --name-only"));
-  if (staged.length === 0 || staged.some((p) => !JOURNAL_PATH.test(p))) {
-    await git(sb, "reset");
-    return {
-      status: "blocked",
-      reason: "el índice quedó con cambios inesperados",
-      files: staged,
-    };
-  }
-
-  await git(sb, "commit -F /workspace/.commit-msg");
-  await sb.removePath({ path: "/workspace/.commit-msg", force: true });
-
-  return await finish(sb, user, true);
-}
-
-/**
- * Close a rebase whose conflicts the agent already resolved in the journal.
- * Refuses while markers survive: a committed `<<<<<<<` breaks every later
- * hledger run.
- */
-export async function continueRebase(
-  sb: CommandRunner,
-  user: NookUser,
-): Promise<LedgerOutcome> {
-  if (!(await rebaseInProgress(sb))) {
-    // Nothing to continue: push whatever is pending instead of erroring.
-    return await syncOnly(sb, user);
-  }
-
-  const unmerged = await unmergedFiles(sb);
-  const offJournal = unmerged.filter((p) => !JOURNAL_PATH.test(p));
-  if (offJournal.length > 0) {
-    return {
-      status: "blocked",
-      reason: "el conflicto toca archivos fuera de los journals raíz",
-      files: offJournal,
-    };
-  }
-
-  const markers = await sb.run({
-    command: `grep -lE '^(<<<<<<<|=======|>>>>>>>)' ${REPO}/*.journal || true`,
-  });
-  const unresolved = lines(markers.stdout ?? "");
-  if (unresolved.length > 0) {
-    return {
-      status: "blocked",
-      reason: "todavía quedan marcadores de conflicto sin resolver",
-      files: unresolved.map((p) => p.replace(`${REPO}/`, "")),
-    };
-  }
-
-  if (unmerged.length > 0) {
-    await git(sb, `add -- ${unmerged.map((p) => `'${p}'`).join(" ")}`);
-  }
-
-  const cont = await runGit(sb, "-c core.editor=true rebase --continue");
-  if (cont.code !== 0) {
-    if (await rebaseInProgress(sb)) {
-      return {
-        status: "conflict",
-        files: await unmergedFiles(sb),
-        detail: firstLines(cont.stderr || cont.stdout, 4),
-      };
-    }
-    return {
-      status: "blocked",
-      reason: `no se pudo continuar el rebase: ${firstLines(cont.stderr, 2)}`,
-      files: [],
-    };
-  }
-
-  return await finish(sb, user, false);
-}
-
-/** Drop a rebase the agent could not resolve. The local commit survives. */
-export async function abortRebase(sb: CommandRunner): Promise<LedgerOutcome> {
-  if (!(await rebaseInProgress(sb))) {
-    return { status: "clean", reason: "no había ningún rebase en curso" };
-  }
-  await git(sb, "rebase --abort");
-  return {
-    status: "aborted",
-    reason: "rebase descartado; el commit local sigue sin pushear",
-  };
 }

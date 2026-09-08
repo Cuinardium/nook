@@ -32,26 +32,27 @@ description: Procedimiento paso a paso para registrar una compra, ingreso o gana
    duda. Cerrá con la lista compacta de pendientes (`1. Cafe — $4.500`), sin
    repetir cuentas y sin ofrecerte a commitear: el usuario da la orden.
 
-6. **Commitear**: cuando el usuario lo pide, llamá `commit_entry` (intent
-   `commit` por default) con una línea por entrada pendiente:
-   `AAAA-MM-DD | descripción | monto | cuenta1, cuenta2, …`. La tarjeta del bot
-   pide la confirmación; no preguntes vos.
+6. **Commitear y pushear**: cuando el usuario lo pide, commiteá localmente
+   con git y llamá `push`. La tarjeta del bot pide la confirmación a ciegas;
+   no preguntes vos.
 
 7. **Según el `status` que devuelve**:
-   - `committed_pushed` / `pushed_only`: listo. No repitas el sha.
+   - `pushed`: listo. No repitas el sha.
    - `clean`: no había nada pendiente; no es un error.
    - `conflict`: hay un rebase en curso. Abrí cada archivo de `files`, resolvé
-     los marcadores a mano — conservá tus entradas nuevas y respetá lo que el
-     remoto cambió o borró, nunca reintroduzcas líneas que el remoto sacó a
-     propósito —, corré `hledger check` y llamá `commit_entry` con
-     `intent: "continue"`. Si el conflicto te excede, `intent: "abort"` y
-     contale al usuario en una línea qué quedó pendiente.
-   - `push_failed`: el commit está local. Un reintento con `intent: "sync"`;
+     los marcadores a mano con git — conservá tus entradas nuevas y respetá
+     lo que el remoto cambió o borró, nunca reintroduzcas líneas que el
+     remoto sacó a propósito —, corré `hledger check`, cerrá el rebase
+     (`rebase --continue`) y llamá `push`. Si el conflicto te excede,
+     descartá el rebase (`rebase --abort`) y contale al usuario en una línea
+     qué quedó pendiente.
+   - `push_failed`: los commits están locales. Un reintento con `push`;
      si falla de nuevo, avisá y pará.
    - `blocked`: leé `reason`, arreglá la causa, no repitas la misma llamada.
 
-   Nunca corras git a mano (`commit`, `push`, `pull`, `reset`): la tool tiene
-   un intent para cada estado.
+   El git local (`add`, `commit`, `rebase`) lo hacés vos con `bash`. Solo la
+   red pasa por las tools: `push` para publicar, `pull` para traer del
+   remoto sin pushear. Nunca toques el remote ni pongas credenciales a mano.
 
 8. **Si el usuario corrige algo** («no, eran 20 mil», «esa era EUR»): corregí
    el asiento aún no commiteado y volvé al paso 4. Si ya fue commiteado,
