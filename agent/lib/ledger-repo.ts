@@ -9,8 +9,8 @@
  * push URL) from exfiltrating the ledger on an approved push.
  *
  * Contract: no caller of this module ever sees raw git output. Each entry
- * point returns a `LedgerOutcome`, and the channel renders one card per
- * status.
+ * point returns a `LedgerOutcome`, and the model communicates the result to
+ * the user.
  */
 
 import { z } from "zod";

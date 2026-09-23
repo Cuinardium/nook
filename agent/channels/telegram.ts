@@ -4,15 +4,8 @@ import {
   telegramChannel,
   type TelegramMessageBody,
 } from "eve/channels/telegram";
-import {
-  escapeHtml,
-  isPushApproval,
-  pushApprovalCard,
-  pushRejectedCard,
-  syncResultCard,
-} from "../lib/cards";
+import { isPushApproval, pushApprovalCard } from "../lib/cards";
 import { getUserByTelegramId } from "../lib/users";
-import { outcomeSchema as outputSchema } from "../lib/ledger-repo";
 
 // Telegram's `typing` chat action expires after ~5s, so while a tool runs we
 // refresh it on an interval. Keyed by chat id because one process can serve
@@ -59,7 +52,7 @@ function startTypingKeepAlive(channel: ChannelHandle): void {
 }
 
 // `post` only types the common fields; parse_mode is forwarded straight to
-// sendMessage by the channel, so we extend the body for rich HTML cards.
+// sendMessage by the channel, so we extend the body for the approval card.
 type HtmlBody = TelegramMessageBody & { parse_mode: "HTML" };
 
 function htmlPost(
@@ -154,14 +147,10 @@ export default telegramChannel({
         return;
       }
 
-      const isSyncAction =
-        action.toolName === "push" || action.toolName === "pull";
-
-      if (!isSyncAction) {
+      if (action.toolName !== "push" && action.toolName !== "pull") {
         return;
       }
 
-      // Strip the approval card's keyboard so it can't be tapped twice.
       const cardId = approvalCardId.get(channel.telegram.chatId);
       if (cardId) {
         await channel.telegram
@@ -169,37 +158,6 @@ export default telegramChannel({
           .catch(() => undefined);
         approvalCardId.delete(channel.telegram.chatId);
       }
-
-      if (data.status === "rejected") {
-        await htmlPost(channel as never, {
-          text: pushRejectedCard(),
-          parse_mode: "HTML",
-        });
-        return;
-      }
-
-      if (data.status === "failed" || data.error) {
-        const detail = data.error?.message ?? "error desconocido";
-        await htmlPost(channel as never, {
-          text:
-            `⚠️ <b>No pude completar la operación</b>\n` +
-            `<blockquote expandable>${escapeHtml(detail)}</blockquote>`,
-          parse_mode: "HTML",
-        });
-        return;
-      }
-      const parsed = outputSchema.safeParse(action.output);
-      if (!parsed.success) {
-        await channel.telegram.post(
-          "⚠️ la herramienta devolvió una salida inesperada.",
-        );
-        return;
-      }
-
-      await htmlPost(channel as never, {
-        text: syncResultCard(parsed.data),
-        parse_mode: "HTML",
-      });
     },
 
     async "message.completed"(data, channel) {

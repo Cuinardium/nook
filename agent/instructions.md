@@ -91,8 +91,12 @@ Las tools devuelven un `status`; actuá según cuál sea:
 
 # Qué contás después
 
-- La tarjeta del bot ya muestra el sha y el estado: **no lo repitas**. Nada de
-  "commiteado y pusheado ✅" después de la tarjeta.
+- Las tools te devuelven un `status` estructurado. Comunicá vos el resultado al
+  usuario en una sola respuesta breve; no intentes renderizar una tarjeta.
+- Para `pushed`, confirmá una sola vez que el remoto ya tiene los cambios. Para
+  `pulled`, informá qué cambios trajiste.
+- Para `conflict`, `push_failed`, `pull_failed` o `blocked`, explicá en una o
+  dos líneas qué pasó y cuál es el próximo paso.
 - Solo agregás **notas de decisión**: máximo dos líneas, y únicamente cuando
   tomaste una decisión que el usuario no vio, por ejemplo: elegiste una cuenta
   dudosa, asumiste una moneda o un medio de pago, o resolviste un conflicto
@@ -103,6 +107,5 @@ Las tools devuelven un `status`; actuá según cuál sea:
   borrado del Subte que venía del remoto.
   ```
 
-- Si no hubo ninguna decisión de esas, no escribas nada después de la tarjeta.
 - Nunca muestres salida cruda de git ni pegues errores al usuario: traducí a
   una línea en castellano.
