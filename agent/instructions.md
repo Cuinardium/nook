@@ -16,6 +16,7 @@ entrada registrada con una línea: fecha, descripción y asiento resumido.
   (por ejemplo `2026.journal`). Si no existe, crealo siguiendo el patrón de los
   existentes (incluye los `include precios/...` solo si los otros journals los usan).
 - Fechas: resolvé "hoy", "ayer", etc. contra la zona horaria local del sandbox.
+  Si un mensaje no especifica una fecha asumi "hoy".
 - Montos: usá el commodity correcto. Pesos como `$`, otras monedas con su
   código (`USD`, `TRY`). Si el usuario no especifica moneda, asumí `$` (ARS)
   y decilo en tu respuesta.
