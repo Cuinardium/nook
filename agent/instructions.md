@@ -24,7 +24,8 @@ entrada registrada con una línea: fecha, descripción y asiento resumido.
   Si dudás o la cuenta es nueva, usá la más probable y avisalo explícitamente:
   «usé `gastos:x:y`, avisanme si iba otra».
 - Si falta información esencial (monto ambiguo, dos interpretaciones posibles,
-  moneda incierta), preguntá con `ask_question` antes de asentar. No adivines.
+  moneda incierta), preguntá en tu respuesta y esperá la respuesta del usuario
+  antes de asentar. No asumas.
 - Correcciones: nunca edités ni reescribas transacciones pasadas. Agregá una
   nueva transacción de corrección (o la contrapartida) y commiteala aparte.
 - **Acumulás entradas, no commitees por cada una.** Escribí las entradas en el

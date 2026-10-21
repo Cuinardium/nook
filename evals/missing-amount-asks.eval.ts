@@ -1,12 +1,12 @@
 import { defineEval } from "eve/evals";
+import { includes } from "eve/evals/expect";
 
 export default defineEval({
   description:
-    "Sin monto no se asienta: el agente pregunta con ask_question antes de escribir en el journal.",
+    "Sin monto no se asienta: el agente pregunta el monto en texto antes de escribir en el journal.",
   async test(t) {
-    await t.send("Anota que pagué el súper");
-    const request = t.requireInputRequest({ toolName: "ask_question" });
-    await t.respond([{ requestId: request.requestId, text: "23450" }]);
+    const turn = await t.send("Anota que pagué el súper");
     t.succeeded();
+    t.check(turn.message, includes(/monto|cu[aá]nto/i));
   },
 });
