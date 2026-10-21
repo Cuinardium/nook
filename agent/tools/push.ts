@@ -49,12 +49,14 @@ export default defineTool({
     "Pushea al remoto del ledger en /workspace/ledger: rebasea los commits locales sobre el remoto y los pushea (pide aprobación, a ciegas: no muestra el contenido). El git local (add, commit, resolver conflictos) lo hacés vos con bash. Devuelve un status estructurado; nunca pongas credenciales ni toques el remote a mano.",
   inputSchema: z.object({}),
   outputSchema,
-  approval: always(),
+  approval: {
+    request: always(),
+    prompt: () => "Confirmar push\n\nPusheo los commits pendientes al remoto.",
+  },
   async execute(_input, ctx) {
     // Credentials are injected per operation (post-approval); resolving the
     // user here means a removed principal fails closed before any git work.
-    // Telegram approval responses resume the turn anonymously, so session
-    // auth alone is not enough — fall back to the captured owner.
+    // Fall back to the captured owner when the turn carries no session auth.
     const principalId =
       ctx.session.auth.current?.principalId ?? sessionOwner.get();
 

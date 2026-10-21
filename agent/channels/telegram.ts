@@ -1,10 +1,4 @@
-import {
-  registerTelegramFreeformPrompt,
-  renderTelegramInputRequest,
-  telegramChannel,
-  type TelegramMessageBody,
-} from "eve/channels/telegram";
-import { isPushApproval, pushApprovalCard } from "../lib/cards";
+import { telegramChannel } from "eve/channels/telegram";
 import { getUserByTelegramId } from "../lib/users";
 
 // Telegram's `typing` chat action expires after ~5s, so while a tool runs we
@@ -13,10 +7,6 @@ import { getUserByTelegramId } from "../lib/users";
 // the commit push, acting as the in-progress spinner.
 const TYPING_REFRESH_MS = 4000;
 const typingTimers = new Map<string, ReturnType<typeof setInterval>>();
-
-// Message id of the active push approval card, so we can strip its keyboard
-// once the user confirms (prevents a double-tap).
-const approvalCardId = new Map<string, string>();
 
 type ChannelHandle = {
   telegram: { chatId: string; startTyping(): Promise<void> };
@@ -51,21 +41,6 @@ function startTypingKeepAlive(channel: ChannelHandle): void {
   typingTimers.set(chatId, timer);
 }
 
-// `post` only types the common fields; parse_mode is forwarded straight to
-// sendMessage by the channel, so we extend the body for the approval card.
-type HtmlBody = TelegramMessageBody & { parse_mode: "HTML" };
-
-function htmlPost(
-  channel: {
-    telegram: {
-      post(body: TelegramMessageBody | string): Promise<{ id: string }>;
-    };
-  },
-  body: HtmlBody,
-): Promise<{ id: string }> {
-  return channel.telegram.post(body as TelegramMessageBody);
-}
-
 export default telegramChannel({
   uploadPolicy: {
     allowedMediaTypes: ["image/*", "application/pdf"],
@@ -80,7 +55,7 @@ export default telegramChannel({
       return null;
     }
 
-    // Only white listed user
+    // Only allowlisted users get through
     const userId = message.from?.id;
     if (!userId) {
       return null;
@@ -109,55 +84,8 @@ export default telegramChannel({
       startTypingKeepAlive(channel as unknown as ChannelHandle);
     },
 
-    async "input.requested"(data, channel) {
-      for (const request of data.requests) {
-        const rendered = renderTelegramInputRequest(request, channel.state);
-
-        if (isPushApproval(request)) {
-          const posted = await htmlPost(channel as never, {
-            text: pushApprovalCard(),
-            reply_markup: rendered.replyMarkup,
-            parse_mode: "HTML",
-          });
-          if (posted.id) {
-            approvalCardId.set(channel.telegram.chatId, posted.id);
-          }
-          continue;
-        }
-
-        const posted = await channel.telegram.post({
-          reply_markup: rendered.replyMarkup,
-          text: rendered.text,
-        });
-
-        if (rendered.freeformRequestId !== undefined && posted.id) {
-          registerTelegramFreeformPrompt(channel.state, {
-            messageId: posted.id,
-            requestId: rendered.freeformRequestId,
-          });
-        }
-      }
-    },
-
-    async "action.result"(data, channel) {
+    async "action.result"(_data, channel) {
       stopTypingKeepAlive(channel as unknown as ChannelHandle);
-      const action = data.result;
-
-      if (action.kind !== "tool-result") {
-        return;
-      }
-
-      if (action.toolName !== "push" && action.toolName !== "pull") {
-        return;
-      }
-
-      const cardId = approvalCardId.get(channel.telegram.chatId);
-      if (cardId) {
-        await channel.telegram
-          .editMessageReplyMarkup({ messageId: cardId, replyMarkup: {} })
-          .catch(() => undefined);
-        approvalCardId.delete(channel.telegram.chatId);
-      }
     },
 
     async "message.completed"(data, channel) {
@@ -168,8 +96,13 @@ export default telegramChannel({
       await channel.telegram.post(data.message);
     },
 
-    async "turn.failed"(_data, channel) {
+    async "turn.failed"(data, channel) {
       stopTypingKeepAlive(channel as unknown as ChannelHandle);
+      // Terminal failures also emit session.failed; let that handler own the
+      // single user-facing notice.
+      if (data.terminal) {
+        return;
+      }
       await channel.telegram.post(
         "I hit an error while handling your request. Please try again, rephrase, or reach out if it keeps failing.",
       );
