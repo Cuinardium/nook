@@ -52,6 +52,22 @@ export default defineTool({
   approval: {
     request: always(),
     prompt: () => "Confirmar push\n\nPusheo los commits pendientes al remoto.",
+    // Telegram re-authenticates button presses with eve's default projection
+    // (`telegram:<userId>`, attributes.user_id), which never equals the nook
+    // principal stamped on the requesting message. Compare the Telegram ids
+    // instead of the full principal so the owner's own press isn't rejected.
+    response: ({ request, response }) => {
+      const requester = request.principal?.attributes.telegramUserId;
+      const responder = response.principal.attributes.user_id;
+      return requester !== undefined &&
+        requester !== null &&
+        String(responder) === String(requester)
+        ? { status: "allowed" }
+        : {
+            status: "rejected",
+            reason: "Solo el dueño de la sesión puede confirmar el push.",
+          };
+    },
   },
   async execute(_input, ctx) {
     // Credentials are injected per operation (post-approval); resolving the
