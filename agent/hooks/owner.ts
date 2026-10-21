@@ -4,9 +4,9 @@ import { sessionOwner } from "../lib/owner";
 
 /**
  * Records who owns each session while auth is present at session start.
- * Telegram approval responses resume turns anonymously (callback queries
- * are delivered with auth: null), so tools that must know whose credentials
- * to use fall back to this captured owner.
+ * Tools that must know whose credentials to use fall back to this captured
+ * owner when the current turn carries no auth. Kept as defense in depth:
+ * eve 0.82 preserves `ctx.session.auth.current` across approvals.
  */
 export default defineHook({
   events: {
