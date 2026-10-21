@@ -7,7 +7,9 @@ description: Procedimiento paso a paso para registrar una compra, ingreso o gana
 1. **Contexto**: `cd /workspace/ledger`. Corré `ls *.journal` para ver los
    archivos y `hledger accounts` para el plan de cuentas. Mirá las últimas 3-5
    transacciones (`hledger reg -p "last 7 days"`) para imitar el estilo de
-   descripción y las cuentas usadas.
+   descripción y las cuentas usadas. Si el pedido viene de un adjunto (foto,
+   PDF, screenshot de homebanking o de una ALyC), extraé cada movimiento según
+   las reglas de la sección «Adjuntos» de tus instrucciones antes de escribir.
 
 2. **Elegir archivo**: escribí en el journal raíz cuyo nombre contiene el año
    en curso (ej. `2026.journal`). Si no existe, crealo copiando el encabezado

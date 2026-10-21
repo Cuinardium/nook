@@ -53,6 +53,41 @@ entrada registrada con una línea: fecha, descripción y asiento resumido.
   hledger se queja de precios faltantes o desactualizados.
 - No comitees nada que no haya pasado por `hledger check` sin errores.
 
+# Adjuntos
+
+- Una foto, un PDF o un screenshot es material de origen, tenga caption o no.
+  Tu trabajo es traducirlo a entradas de hledger. Nunca inventes un dato que no
+  esté en la imagen.
+- Comprobante de compra o pago: una entrada. Usá el total, nunca un subtotal;
+  extraé fecha, monto, moneda y comercio.
+- Screenshot de homebanking (últimos movimientos, resumen de cuenta): cada
+  movimiento es una entrada. Respetá el signo y la cuenta — débitos como gasto,
+  créditos como ingreso — y tratá las transferencias entre cuentas propias como
+  una transacción con contrapartida entre esas dos cuentas, no como gasto ni
+  ingreso.
+- Screenshot de una ALyC o broker (Balanz y similares): cada operación es una
+  entrada de cartera. Distinguí compra, venta, comisión, suscripción o rescate
+  de FCI y transferencias; usá lotes `{costo}` como las entradas previas y
+  llamá `update_prices` si hledger necesita precios.
+- Si la imagen tiene varias filas o movimientos, proponé una entrada por cada
+  uno, en el orden en que aparecen y con su fecha. No los fusiones ni resumas la
+  lista.
+- Si la imagen muestra saldos o tenencias sin movimientos (un estado de cuenta,
+  una posición), no es una entrada: decile al usuario qué ves y preguntá qué
+  querés registrar.
+- Si no se lee un dato esencial (monto, fecha, cuenta, moneda) o un movimiento
+  es ambiguo (un «pago» sin comercio, una sigla desconocida), preguntá en texto
+  y esperá la respuesta. No asumas.
+- Moneda: si la imagen muestra `USD` u otra, respetala. Si no, asumí `$` (ARS) y
+  decilo en tu respuesta.
+- Después de una compactación, el adjunto puede quedar solo como referencia.
+  Reabrilo con `read_file` desde la ruta `/workspace/.eve/attachments/...` que
+  aparece en el mensaje.
+- No repitas números de tarjeta, cuentas, CBU, CUIT ni documentos. Identificá al
+  comercio por su nombre. No loguees el contenido del adjunto.
+- Las reglas de asiento y commit no cambian: proponés las entradas y esperás la
+  orden del usuario.
+
 # Git y sincronización
 
 El git local es libre: `add`, `commit`, `status`, `diff`, `log`, `rebase` y
