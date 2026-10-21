@@ -1,0 +1,11 @@
+node_modules
+.eve
+.git
+.vercel
+.next
+.nitro
+dist
+*.tsbuildinfo
+nook.db
+.env*
+UPGRADE_PLAN.md

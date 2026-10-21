@@ -7,7 +7,7 @@ Nook is a personal bookkeeping assistant on Telegram, built with the [eve](https
 - **Channel**: Telegram (`agent/channels/telegram.ts`). Confirmations use inline Approve/Reject buttons via eve's human-in-the-loop rendering.
 - **Model**: OpenCode Go models through an OpenAI-compatible endpoint (`agent/agent.ts`).
 - **Sandbox**: each turn runs in a Docker sandbox with the user's ledger repo cloned at `/workspace/ledger` and `hledger` available.
-- **Approval flow**: the assistant drafts the full transaction in chat first and commits locally with git; `push` (`agent/tools/push.ts`) is gated by `approval: always()` and rebases + pushes via the user's forge token. `pull` (`agent/tools/pull.ts`) fetches + rebases without pushing. Both verify `origin` still points at the user's repo before touching the network.
+- **Approval flow**: the assistant drafts the full transaction in chat first and commits locally with git; `push` (`agent/tools/push.ts`) is gated by `approval: { request: always(), prompt }` and rebases + pushes via the user's forge token. `pull` (`agent/tools/pull.ts`) fetches + rebases without pushing. Both verify `origin` still points at the user's repo before touching the network.
 - **Prices**: `update_prices` (`agent/tools/update_prices.ts`) refreshes commodity prices before valuing positions in ARS.
 - **Hooks**: `agent/hooks/audit.ts` logs JSON audit lines to stdout; `agent/hooks/owner.ts` handles owner notifications.
 - **Skill**: `agent/skills/hledger-entry` holds the journal-writing conventions.
@@ -32,9 +32,35 @@ Evals live in `evals/`.
 
 ## Deployment
 
-The `Dockerfile` builds the agent with `eve build` into `.output/` and serves it via `eve start`, which prewarms the hledger sandbox template on the host daemon. Deploy to Vercel with:
+Nook is self-hosted, and the build runs on the same host that serves it. `eve
+build` needs a Docker daemon to prepare the sandbox template image, and the
+prepared manifest only points at that daemon's local image, so build and runtime
+must share the daemon. The host needs Node 24, the Docker CLI and daemon, and
+network access (the sandbox `prepare` runs `apt-get`).
+
+On the host:
 
 ```sh
-eve link --non-interactive --project <name-or-id>
-eve deploy --non-interactive --yes
+git pull
+npm ci
+npx eve build          # prepares the sandbox template in the host daemon
+docker build -t nook . # packages .output into the app image
+docker compose up -d   # or the docker run below
 ```
+
+`eve build` leaves the template in the daemon, so `eve start` finds it with no
+artifact transport. The container needs the host socket and a persistent volume:
+
+```sh
+docker run -d --name nook -p 3000:3000 \
+  --mount type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock \
+  --mount type=volume,source=nook-workflows,target=/app/.eve/.workflow-data \
+  --env-file .env nook
+```
+
+Mount `/app/.eve/.workflow-data` on persistent storage so durable sessions
+survive container restarts. Sessions created before an upgrade do not survive a
+self-hosted upgrade: the next message starts a new session.
+
+Without Docker, install `git`, `jq`, and `curl` on the host and run
+`node_modules/.bin/eve start` under systemd instead.
