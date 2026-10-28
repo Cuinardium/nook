@@ -1,5 +1,6 @@
 import { defineSandbox } from "eve/sandbox";
 import { DockerSandbox } from "eve/sandbox/docker";
+import { parseSandboxReadiness } from "../lib/audit-fields";
 import { getConfig } from "../lib/config";
 import { gitAuthFlag, withForgeCredentials } from "../lib/forge";
 import { log } from "../lib/log";
@@ -95,11 +96,12 @@ export default defineSandbox(async ({ session }) => {
     );
   }
 
+  const readiness = parseSandboxReadiness(head.stdout);
   log.info({
-    module: "sandbox",
-    event: "ready",
-    principal: principal,
-    head: head.stdout,
+    event: "sandbox.ready",
+    sessionId: session.id,
+    principalId: principal,
+    ...readiness,
   });
 
   return sandbox;
