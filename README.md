@@ -39,13 +39,16 @@ On the host:
 
 ```sh
 # Every tool call of the last day, with its compact input.
-docker logs nook-nook-1 --since 24h 2>&1 \
+docker logs nook-nook-1 --since 24h 2>&1 | grep -a '^{' \
   | jq -c 'select(.event == "tool.requested") | {principalId, toolName, input}'
 
 # How a single session spent its time.
-docker logs nook-nook-1 --since 24h 2>&1 \
+docker logs nook-nook-1 --since 24h 2>&1 | grep -a '^{' \
   | jq -c 'select(.sessionId == "wrun_...") | {ts, event, toolName, ms, status}'
 ```
+
+The `grep` drops the multi-line harness errors that share the stream; without it
+`jq` stops at the first one.
 
 Docker's default `json-file` driver does not rotate. Bound it in `compose.yaml`:
 
@@ -88,8 +91,10 @@ NOOK_EVAL_ATTACHMENTS=1 npx eve eval --tag attachments --url https://nook.exampl
 Nook is self-hosted, and the build runs on the same host that serves it. `eve
 build` needs a Docker daemon to prepare the sandbox template image, and the
 prepared manifest only points at that daemon's local image, so build and runtime
-must share the daemon. The host needs Node 24, the Docker CLI and daemon, and
-network access (the sandbox `prepare` runs `apt-get`).
+must share the daemon. The host needs Node 24 — from eve 0.83 onward `eve build`
+exits with `eve requires Node.js >=24` on anything older, so check `node -v`
+first — plus the Docker CLI and daemon, and network access (the sandbox `prepare`
+runs `apt-get`).
 
 On the host:
 
@@ -102,18 +107,46 @@ docker compose up -d   # or the docker run below
 ```
 
 `eve build` leaves the template in the daemon, so `eve start` finds it with no
-artifact transport. The container needs the host socket and a persistent volume:
+artifact transport, and later builds reuse it unless the sandbox definition, the
+skill files, or the generated Dockerfile change. The container needs the host
+socket and two persistent volumes:
+
+```yaml
+services:
+  nook:
+    image: nook:latest
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - nook_state:/app/.eve
+      # Sessions live here. A mount at /app/.eve alone leaves them on an
+      # anonymous volume that `docker compose down -v` deletes silently.
+      - nook_workflows:/app/.eve/.workflow-data
+      - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  nook_state:
+  nook_workflows:
+    name: nook_workflows
+```
+
+Or without compose:
 
 ```sh
 docker run -d --name nook -p 3000:3000 \
   --mount type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock \
-  --mount type=volume,source=nook-workflows,target=/app/.eve/.workflow-data \
+  --mount type=volume,source=nook_state,target=/app/.eve \
+  --mount type=volume,source=nook_workflows,target=/app/.eve/.workflow-data \
   --env-file .env nook
 ```
 
-Mount `/app/.eve/.workflow-data` on persistent storage so durable sessions
-survive container restarts. Sessions created before an upgrade do not survive a
-self-hosted upgrade: the next message starts a new session.
+Both mounts matter: `/app/.eve/.workflow-data` holds the sessions and
+`/app/.eve` holds the sandbox cache. Restarts and image rebuilds keep them; an
+**eve upgrade does not**. A run belongs to the eve version that created it, so
+the next message retires the old session and starts a fresh one, and that
+conversation's history is gone. Since eve 0.83 the retirement is automatic, and a
+session whose recorded sandbox no longer matches the prepared template starts a
+fresh sandbox instead of failing every tool call until the session times out.
 
 Without Docker, install `git`, `jq`, and `curl` on the host and run
 `node_modules/.bin/eve start` under systemd instead.
