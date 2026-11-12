@@ -1,44 +1,100 @@
-import { telegramChannel } from "eve/channels/telegram";
+import {
+  telegramChannel,
+  type TelegramHandle,
+  type TelegramInboundResult,
+  type TelegramMessage,
+} from "eve/channels/telegram";
 import { getUserByTelegramId } from "../lib/users";
 
-// Telegram's `typing` chat action expires after ~5s, so while a tool runs we
+// Telegram's `typing` chat action expires after ~5s, so while tool calls run we
 // refresh it on an interval. Keyed by chat id because one process can serve
-// several chats. The indicator stays live through the approval-card wait and
-// the commit push, acting as the in-progress spinner.
+// several chats, and counted because a step can run several calls at once.
+// The indicator stays live through the approval-card wait and the commit push
+// (a call only settles after it executes), acting as the in-progress spinner.
 const TYPING_REFRESH_MS = 4000;
-const typingTimers = new Map<string, ReturnType<typeof setInterval>>();
 
-type ChannelHandle = {
-  telegram: { chatId: string; startTyping(): Promise<void> };
+type TypingState = {
+  active: number;
+  timer: ReturnType<typeof setInterval>;
 };
 
-function chatIdOf(channel: ChannelHandle): string {
-  return channel.telegram.chatId || "";
+const typing = new Map<string, TypingState>();
+
+function chatIdOf(handle: TelegramHandle): string {
+  return handle.chatId || "";
 }
 
-function stopTypingKeepAlive(channel: ChannelHandle): void {
-  const chatId = chatIdOf(channel);
+function stopTyping(handle: TelegramHandle): void {
+  const chatId = chatIdOf(handle);
   if (!chatId) {
     return;
   }
-  const timer = typingTimers.get(chatId);
-  if (timer) {
-    clearInterval(timer);
-    typingTimers.delete(chatId);
+  const state = typing.get(chatId);
+  if (state) {
+    clearInterval(state.timer);
+    typing.delete(chatId);
   }
 }
 
-function startTypingKeepAlive(channel: ChannelHandle): void {
-  const chatId = chatIdOf(channel);
+function startTyping(handle: TelegramHandle): void {
+  const chatId = chatIdOf(handle);
   if (!chatId) {
     return;
   }
-  stopTypingKeepAlive(channel);
-  void channel.telegram.startTyping().catch(() => undefined);
+  stopTyping(handle);
+  void handle.startTyping().catch(() => undefined);
   const timer = setInterval(() => {
-    void channel.telegram.startTyping().catch(() => undefined);
+    void handle.startTyping().catch(() => undefined);
   }, TYPING_REFRESH_MS);
-  typingTimers.set(chatId, timer);
+  typing.set(chatId, { active: 0, timer });
+}
+
+function startCall(handle: TelegramHandle): void {
+  const chatId = chatIdOf(handle);
+  if (!chatId) {
+    return;
+  }
+  const state = typing.get(chatId);
+  if (!state) {
+    startTyping(handle);
+    const started = typing.get(chatId);
+    if (started) {
+      started.active = 1;
+    }
+    return;
+  }
+  state.active += 1;
+}
+
+function endCall(handle: TelegramHandle): void {
+  const chatId = chatIdOf(handle);
+  if (!chatId) {
+    return;
+  }
+  const state = typing.get(chatId);
+  if (!state) {
+    return;
+  }
+  state.active = Math.max(0, state.active - 1);
+  if (state.active === 0) {
+    stopTyping(handle);
+  }
+}
+
+/** The answer text of a reply part, when the channel got the whole value. */
+function replyText(
+  kind: string,
+  phase: string,
+  value: unknown,
+  fallbackText: string | undefined,
+): string | undefined {
+  if (kind !== "text" || phase !== "reply") {
+    return undefined;
+  }
+  if (typeof value === "string" && value.length > 0) {
+    return value;
+  }
+  return fallbackText && fallbackText.length > 0 ? fallbackText : undefined;
 }
 
 export default telegramChannel({
@@ -46,9 +102,12 @@ export default telegramChannel({
     allowedMediaTypes: ["image/*", "application/pdf"],
     maxBytes: 10 * 1024 * 1024,
   },
-  async onMessage(handle, message) {
+  onMessage(
+    ctx,
+    message: TelegramMessage,
+  ): TelegramInboundResult | null {
     // Clear any stale typing timer for this chat before a new turn.
-    stopTypingKeepAlive(handle as unknown as ChannelHandle);
+    stopTyping(ctx.telegram);
 
     // Only private-chat senders get through
     if (message.chat.type !== "private") {
@@ -79,38 +138,48 @@ export default telegramChannel({
     };
   },
   events: {
-    // Persistent "typing" while any tool runs (the in-progress spinner).
-    async "actions.requested"(_data, channel) {
-      startTypingKeepAlive(channel as unknown as ChannelHandle);
+    // Persistent "typing" while any tool call runs (the in-progress spinner).
+    async "call.requested"(_event, ctx) {
+      startCall(ctx.channel.telegram);
     },
 
-    async "action.result"(_data, channel) {
-      stopTypingKeepAlive(channel as unknown as ChannelHandle);
+    async "call.settled"(_event, ctx) {
+      endCall(ctx.channel.telegram);
     },
 
-    async "message.completed"(data, channel) {
-      stopTypingKeepAlive(channel as unknown as ChannelHandle);
-      if (data.finishReason === "tool-calls" || !data.message) {
+    // The turn's answer. Narration parts are not posted: the agent speaks once.
+    async "content.completed"(event, ctx) {
+      const text = replyText(
+        event.data.kind,
+        event.data.phase,
+        event.data.value,
+        event.data.fallbackText,
+      );
+      if (text === undefined) {
         return;
       }
-      await channel.telegram.post(data.message);
+      stopTyping(ctx.channel.telegram);
+      await ctx.channel.telegram.post(text);
     },
 
-    async "turn.failed"(data, channel) {
-      stopTypingKeepAlive(channel as unknown as ChannelHandle);
-      // Terminal failures also emit session.failed; let that handler own the
-      // single user-facing notice.
-      if (data.terminal) {
+    // A failed turn (a failed session settles its turn as cancelled, so this is
+    // never the terminal case).
+    async "turn.settled"(event, ctx) {
+      stopTyping(ctx.channel.telegram);
+      if (event.data.outcome !== "failed") {
         return;
       }
-      await channel.telegram.post(
+      await ctx.channel.telegram.post(
         "I hit an error while handling your request. Please try again, rephrase, or reach out if it keeps failing.",
       );
     },
 
-    async "session.failed"(_data, channel) {
-      stopTypingKeepAlive(channel as unknown as ChannelHandle);
-      await channel.telegram.post(
+    async "session.ended"(event, ctx) {
+      stopTyping(ctx.channel.telegram);
+      if (event.data.outcome !== "failed") {
+        return;
+      }
+      await ctx.channel.telegram.post(
         "This session could not recover from an error. Start a new message to continue.",
       );
     },

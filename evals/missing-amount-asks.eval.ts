@@ -7,6 +7,6 @@ export default defineEval({
   async test(t) {
     const turn = await t.send("Anota que pagué el súper");
     t.succeeded();
-    t.check(turn.message, includes(/monto|cu[aá]nto/i));
+    t.check(turn.reply, includes(/monto|cu[aá]nto/i));
   },
 });

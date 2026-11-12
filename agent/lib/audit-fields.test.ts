@@ -115,15 +115,14 @@ describe("summarizeToolOutput", () => {
 describe("summarizeInputRequest", () => {
   it("does not log the prompt or option labels", () => {
     const summary = summarizeInputRequest({
+      interactionId: "int_1",
       kind: "question",
-      requestId: "req_1",
       prompt: "¿Confirmás el gasto de $4.500?",
-      action: { toolName: "ask_question", callId: "call_1" },
       options: [{ label: "Sí" }, { label: "No" }],
     });
 
     assert.equal(summary.inputKind, "question");
-    assert.equal(summary.toolName, "ask_question");
+    assert.equal(summary.interactionId, "int_1");
     assert.equal(summary.optionCount, 2);
     const json = JSON.stringify(summary);
     assert.ok(!json.includes("4.500"));
@@ -134,13 +133,13 @@ describe("summarizeInputRequest", () => {
 describe("summarizeInputResolution", () => {
   it("logs the outcome and option id, not the freeform text", () => {
     const summary = summarizeInputResolution({
+      interactionId: "int_1",
       kind: "question",
-      requestId: "req_1",
-      outcome: "answered",
+      outcome: "accepted",
       response: { text: "fueron 4500" },
     });
 
-    assert.equal(summary.outcome, "answered");
+    assert.equal(summary.outcome, "accepted");
     assert.equal(summary.responseChars, 11);
     assert.ok(!JSON.stringify(summary).includes("4500"));
   });

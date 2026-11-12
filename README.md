@@ -18,16 +18,21 @@ Nook is a personal bookkeeping assistant on Telegram, built with the [eve](https
 
 `agent/hooks/audit.ts` writes one JSON object per line to stdout. Every line
 carries `ts`, `level`, `event`, `eventId`, `sessionId`, and `principalId` (null
-when the session has no authenticated principal).
+when the session has no authenticated principal). `eventId` is the event's
+position on the session stream, `<line>.<index>`; it is stable and ordered but
+no longer a framework event id, which session-events v27 does not have.
 
 | `event` | What it records |
 | --- | --- |
 | `session.started` / `sandbox.ready` | session principal and the ledger commit the sandbox opened (`headSha`, `headSubject`, `journals`) |
-| `message.received` | who wrote, on which channel, and the message size (no text) |
-| `tool.requested` / `tool.result` | every tool call: compact input, status, duration, exit code and output shape |
-| `subagent.*` / `skill.*` | delegated work and skill loads |
-| `input.*` / `approval.settled` | questions and who approved a push |
-| `step.*` / `turn.*` | model step tokens and turn duration or failure |
+| `message.received` / `message.settled` | who wrote, on which channel, the message size (no text), and how the delivery ended |
+| `tool.requested` / `tool.result` | every tool call: compact input, `status` (the call's outcome), duration, exit code and output shape |
+| `subagent.*` / `remote_agent.*` / `skill.*` / `control.*` | delegated work, remote agents, skill loads, and task-control calls |
+| `input.requested` / `input.resolved` / `approval.settled` | questions, sign-ins, and who approved a push |
+| `step.completed` / `step.failed` / `step.retried` | one row per model run: finish reason, attempts, duration, failure |
+| `usage` | tokens and cost per model run, from `usage.recorded` |
+| `context.settled` | compaction outcome |
+| `turn.completed` / `turn.failed` / `turn.cancelled` | turn duration and failure, keyed on the turn's `outcome` |
 | `ledger.push` / `ledger.pull` / `ledger.prices` | domain outcome of the three network/pricing tools |
 | `session.failed` / `session.completed` | terminal session outcome |
 
@@ -91,20 +96,44 @@ NOOK_EVAL_ATTACHMENTS=1 npx eve eval --tag attachments --url https://nook.exampl
 Nook is self-hosted, and the build runs on the same host that serves it. `eve
 build` needs a Docker daemon to prepare the sandbox template image, and the
 prepared manifest only points at that daemon's local image, so build and runtime
-must share the daemon. The host needs Node 24 — from eve 0.83 onward `eve build`
-exits with `eve requires Node.js >=24` on anything older, so check `node -v`
-first — plus the Docker CLI and daemon, and network access (the sandbox `prepare`
-runs `apt-get`).
+must share the daemon. The host needs Node 24 — `eve build` exits with
+`eve requires Node.js >=24` on anything older, so check `node -v` first — plus
+the Docker CLI and daemon, and network access (the sandbox `prepare` runs
+`apt-get`).
 
 On the host:
 
 ```sh
+cd ~/services/nook/src
 git pull
 npm ci
 npx eve build          # prepares the sandbox template in the host daemon
 docker build -t nook . # packages .output into the app image
+cd ..
 docker compose up -d   # or the docker run below
 ```
+
+### Upgrading eve
+
+The working clone of the ledger lives in each session's sandbox container, so
+an upgrade must not take local work with it. In order:
+
+```sh
+# 1. From the bot: push the ledger, and confirm the remote is clean.
+# 2. Keep a copy of the old sessions and the activity trail, then wipe.
+docker compose down
+docker run --rm -v nook_workflows:/sessions -v /tmp:/out alpine \
+  tar czf /out/nook-workflows-pre-upgrade.tgz -C /sessions .
+docker run --rm -v nook_workflows:/sessions alpine sh -c 'rm -rf /sessions/*'
+docker rm -f $(docker ps -aq --filter label=eve.sandbox=1)  # session sandboxes
+
+# 3. Build and start the new version, then smoke-test a conversation.
+npx eve build && docker build -t nook . && docker compose up -d
+```
+
+Sessions are disposable here: the next Telegram message starts a fresh one with
+a clean clone and a clean context. Sandbox containers are labelled
+`eve.sandbox=1`, so the prune only touches eve's own containers.
 
 `eve build` leaves the template in the daemon, so `eve start` finds it with no
 artifact transport, and later builds reuse it unless the sandbox definition, the
@@ -147,6 +176,15 @@ the next message retires the old session and starts a fresh one, and that
 conversation's history is gone. Since eve 0.83 the retirement is automatic, and a
 session whose recorded sandbox no longer matches the prepared template starts a
 fresh sandbox instead of failing every tool call until the session times out.
+
+On eve 1.0 a session from 0.69–0.83 moves to the new deployment on its next
+message instead of starting over: eve compacts the earlier conversation into a
+summary and resets remembered approvals and usage limits. Checkpoints go to v19,
+so an older deployment refuses to take a session back. nook does not rely on
+that migration — the upgrade wipes the volume, which makes the rollback a wipe
+and redeploy too. **Push the ledger before an upgrade**: the working clone lives
+in the session's sandbox container, so a wiped session takes uncommitted edits
+and unpushed commits with it.
 
 Without Docker, install `git`, `jq`, and `curl` on the host and run
 `node_modules/.bin/eve start` under systemd instead.

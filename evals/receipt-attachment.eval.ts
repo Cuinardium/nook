@@ -31,11 +31,11 @@ export default defineEval({
     );
 
     t.succeeded();
-    t.check(turn.message, includes(/7[.,]450/));
+    t.check(turn.reply, includes(/7[.,]450/));
     t.check(
-      turn.message,
+      turn.reply,
       includes(/20\/10\/2026|2026-10-20|20 de octubre/i),
     );
-    t.check(turn.message, includes(/don pedro|verduler/i));
+    t.check(turn.reply, includes(/don pedro|verduler/i));
   },
 });

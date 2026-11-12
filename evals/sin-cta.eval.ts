@@ -14,9 +14,9 @@ export default defineEval({
   async test(t) {
     const turn = await t.send("Anota que pagué el súper");
 
-    t.check(turn.message, includes(ASKS_AMOUNT));
+    t.check(turn.reply, includes(ASKS_AMOUNT));
     t.check(
-      turn.message,
+      turn.reply,
       satisfies(
         (value) => !CTA.test(String(value ?? "")),
         "la respuesta no termina en una llamada a la acción",

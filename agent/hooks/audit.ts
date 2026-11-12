@@ -1,4 +1,5 @@
 import { defineHook, type HookContext } from "eve/hooks";
+import { delivery } from "eve/events";
 import {
   approxBytes,
   errorMessage,
@@ -18,11 +19,16 @@ import { auditProjection as updatePricesAudit } from "../tools/update_prices";
  * Structured activity trail for nook, captured by `docker logs`.
  * Observe-only.
  *
- * Every line carries `ts`, `level`, `event`, `eventId` (the durable event id)
- * and the principal/session coordinates. Content stays out by default:
- * tool inputs are compacted and redacted, tool outputs are reduced to shape
- * and byte counts. The domain rows (`ledger.push`, `ledger.pull`,
- * `ledger.prices`) add the outcome fields the UI and evals care about.
+ * Every line carries `ts`, `level`, `event`, `eventId` (the committed line and
+ * its index, which is the event's stable position on the session stream) and
+ * the principal/session coordinates. Content stays out by default: tool inputs
+ * are compacted and redacted, tool outputs are reduced to shape and byte
+ * counts. The domain rows (`ledger.push`, `ledger.pull`, `ledger.prices`) add
+ * the outcome fields the UI and evals care about.
+ *
+ * The stream is session-events v27: one event ends each item with an
+ * `outcome`, calls are `call.requested`/`call.settled`, and token usage comes
+ * from `usage.recorded`.
  */
 const AUDITED = [
   { name: "push", tag: "ledger.push", project: pushAudit },
@@ -30,19 +36,25 @@ const AUDITED = [
   { name: "update_prices", tag: "ledger.prices", project: updatePricesAudit },
 ];
 
+type CallIdentity = {
+  kind: string;
+  name: string;
+  remote: boolean;
+};
+
 const callStartedAt = new Map<string, number>();
+const callIdentity = new Map<string, CallIdentity>();
 const turnStartedAt = new Map<string, number>();
+const runStartedAt = new Map<string, { at: number; attempt: number }>();
+const interactionKind = new Map<string, string>();
+const responseDelivery = new Map<string, string>();
 const MAX_TRACKED = 2_000;
 
 function scopedKey(sessionId: string, id: string): string {
   return `${sessionId}:${id}`;
 }
 
-function remember(
-  map: Map<string, number>,
-  key: string,
-  value: number,
-): void {
+function remember<T>(map: Map<string, T>, key: string, value: T): void {
   if (map.size >= MAX_TRACKED) {
     const oldest = map.keys().next().value;
     if (oldest !== undefined) {
@@ -52,36 +64,48 @@ function remember(
   map.set(key, value);
 }
 
+function take<T>(map: Map<string, T>, key: string): T | undefined {
+  const value = map.get(key);
+  if (value !== undefined) {
+    map.delete(key);
+  }
+  return value;
+}
+
 function elapsedMs(
   map: Map<string, number>,
   key: string,
-  endMs: number,
 ): number | undefined {
-  const start = map.get(key);
+  const start = take(map, key);
   if (start === undefined) {
     return undefined;
   }
-  map.delete(key);
-  return Math.max(0, endMs - start);
+  return Math.max(0, Date.now() - start);
 }
 
-function eventMs(event: { readonly meta: { readonly at: string } }): number {
-  const parsed = Date.parse(event.meta.at);
-  return Number.isNaN(parsed) ? Date.now() : parsed;
+/** Who answered a request: the principal of the delivery the answer arrived in. */
+function responderPrincipal(
+  ctx: HookContext,
+  deliveryId: string,
+): string | undefined {
+  return delivery(ctx.view, deliveryId)?.principal?.id;
 }
 
 function principalIdOf(ctx: HookContext): string | undefined {
-  return ctx.session.auth.current?.principalId ?? sessionOwner.get() ?? undefined;
+  return (
+    ctx.session.auth.current?.principalId ?? sessionOwner.get() ?? undefined
+  );
 }
 
-function traceBase(
-  event: { readonly meta: { readonly id: string } },
-  ctx: HookContext,
-  name: string,
-): LogFields {
+/** Stable, ordered coordinate of the event on the session stream. */
+function eventIdOf(ctx: HookContext): string {
+  return `${ctx.position.line}.${ctx.position.index}`;
+}
+
+function traceBase(ctx: HookContext, name: string): LogFields {
   return {
     event: name,
-    eventId: event.meta.id,
+    eventId: eventIdOf(ctx),
     sessionId: ctx.session.id,
     principalId: principalIdOf(ctx) ?? null,
     channel: ctx.channel.kind,
@@ -100,19 +124,20 @@ function safe(auditEvent: string, run: () => void): void {
   }
 }
 
+function errorFields(error: { code: string; message: string } | undefined) {
+  return {
+    errorCode: error?.code,
+    errorMessage: error ? truncateText(error.message, 500) : undefined,
+  };
+}
+
 function auditDomainTool(
-  event: {
-    readonly data: {
-      readonly status: string;
-      readonly error?: { readonly message: string } | undefined;
-    };
-  },
-  action: { readonly toolName: string; readonly output: unknown },
+  toolName: string,
+  outcome: string,
+  output: unknown,
   base: LogFields,
 ): void {
-  const entry = AUDITED.find(
-    (candidate) => candidate.name === action.toolName,
-  );
+  const entry = AUDITED.find((candidate) => candidate.name === toolName);
   if (!entry) {
     return;
   }
@@ -120,30 +145,28 @@ function auditDomainTool(
   const domainBase: LogFields = {
     ...base,
     event: entry.tag,
-    toolName: entry.name,
+    toolName,
   };
 
-  if (event.data.status === "rejected") {
+  if (outcome === "rejected") {
     log.info(domainBase);
     return;
   }
-  if (event.data.status === "failed" || event.data.error) {
+  if (outcome !== "completed") {
     log.warn({
       ...domainBase,
-      msg: event.data.error
-        ? truncateText(event.data.error.message, 500)
-        : "la tool falló",
+      msg: `la tool terminó con outcome ${outcome}`,
     });
     return;
   }
 
   try {
-    log.info({ ...domainBase, ...entry.project(action.output) });
+    log.info({ ...domainBase, ...entry.project(output) });
   } catch (err) {
     log.warn({
       ...domainBase,
       msg: errorMessage(err),
-      output: summarizeToolOutput(entry.name, action.output),
+      output: summarizeToolOutput(toolName, output),
     });
   }
 }
@@ -153,30 +176,32 @@ export default defineHook({
     "session.started"(event, ctx) {
       safe("session.started", () => {
         log.info({
-          ...traceBase(event, ctx, "session.started"),
+          ...traceBase(ctx, "session.started"),
           authenticated: Boolean(ctx.session.auth.current?.principalId),
+          eveVersion: event.data.runtime?.eveVersion,
+          replaced: event.data.predecessor?.sessionId,
         });
       });
     },
 
-    "message.received"(event, ctx) {
-      safe("message.received", () => {
+    "delivery.consumed"(event, ctx) {
+      safe("delivery.consumed", () => {
         const attachments: Array<{ mediaType: string; bytes?: number }> = [];
-        for (const part of event.data.parts ?? []) {
-          if (part.type === "file") {
-            attachments.push({
-              mediaType: part.mediaType,
-              bytes: part.size,
-            });
+        let chars = 0;
+        for (const part of event.data.parts) {
+          if (part.kind === "text") {
+            chars += part.text.length;
+          } else if (part.kind === "file") {
+            attachments.push({ mediaType: part.mediaType, bytes: part.size });
           }
         }
 
         // The text itself stays out of the log: it is personal finance data.
         log.info({
-          ...traceBase(event, ctx, "message.received"),
+          ...traceBase(ctx, "message.received"),
           turnId: event.data.turnId,
-          sequence: event.data.sequence,
-          chars: event.data.message.length,
+          deliveryId: event.data.deliveryId,
+          chars,
           attachmentCount: attachments.length,
           attachments,
         });
@@ -188,285 +213,326 @@ export default defineHook({
         remember(
           turnStartedAt,
           scopedKey(ctx.session.id, event.data.turnId),
-          eventMs(event),
+          Date.now(),
         );
         log.info({
-          ...traceBase(event, ctx, "turn.started"),
+          ...traceBase(ctx, "turn.started"),
           turnId: event.data.turnId,
-          sequence: event.data.sequence,
+          follows: event.data.follows,
         });
       });
     },
 
-    "actions.requested"(event, ctx) {
-      safe("actions.requested", () => {
+    "call.requested"(event, ctx) {
+      safe("call.requested", () => {
+        const { callId, capability } = event.data;
+        const name = capability.name;
+        const remote = capability.remote === true;
+        remember(callIdentity, callId, {
+          kind: capability.kind,
+          name,
+          remote,
+        });
+        remember(
+          callStartedAt,
+          scopedKey(ctx.session.id, callId),
+          Date.now(),
+        );
+
         const base: LogFields = {
-          ...traceBase(event, ctx, "action.requested"),
-          turnId: event.data.turnId,
-          stepIndex: event.data.stepIndex,
-          sequence: event.data.sequence,
-          batchSize: event.data.actions.length,
+          ...traceBase(ctx, "tool.requested"),
+          turnId: event.scope?.turnId,
+          runId: event.scope?.runId,
+          callId,
+          capabilityKind: capability.kind,
+          hidden: capability.hidden === true,
+          label: capability.label,
+          inputError: event.data.inputError?.code,
         };
 
-        for (const [index, action] of event.data.actions.entries()) {
-          remember(
-            callStartedAt,
-            scopedKey(ctx.session.id, action.callId),
-            eventMs(event),
-          );
-
-          switch (action.kind) {
-            case "tool-call":
-              log.info({
-                ...base,
-                event: "tool.requested",
-                actionIndex: index,
-                toolName: action.toolName,
-                callId: action.callId,
-                input: summarizeToolInput(action.toolName, action.input),
-              });
-              break;
-            case "subagent-call":
-              log.info({
-                ...base,
-                event: "subagent.requested",
-                actionIndex: index,
-                callId: action.callId,
-                subagentName: action.subagentName,
-                name: action.name,
-                nodeId: action.nodeId,
-                inputBytes: approxBytes(action.input),
-              });
-              break;
-            case "remote-agent-call":
-              log.info({
-                ...base,
-                event: "remote_agent.requested",
-                actionIndex: index,
-                callId: action.callId,
-                remoteAgentName: action.remoteAgentName,
-                name: action.name,
-                nodeId: action.nodeId,
-                inputBytes: approxBytes(action.input),
-              });
-              break;
-            case "load-skill":
-              log.info({
-                ...base,
-                event: "skill.requested",
-                actionIndex: index,
-                callId: action.callId,
-                name: action.name,
-                input: summarizeToolInput("load_skill", action.input),
-              });
-              break;
-            case "workflow-tool-call":
-              log.info({
-                ...base,
-                event: "tool.requested",
-                actionIndex: index,
-                toolName: action.toolName,
-                callId: action.callId,
-                workflowId: action.workflowId,
-                input: summarizeToolInput(action.toolName, action.input),
-              });
-              break;
-          }
+        switch (capability.kind) {
+          case "tool":
+            log.info({
+              ...base,
+              toolName: name,
+              input: summarizeToolInput(name, event.data.input),
+            });
+            return;
+          case "agent":
+            log.info({
+              ...base,
+              event: remote ? "remote_agent.requested" : "subagent.requested",
+              subagentName: name,
+              inputBytes: approxBytes(event.data.input),
+            });
+            return;
+          case "skill":
+            log.info({
+              ...base,
+              event: "skill.requested",
+              name,
+              inputBytes: approxBytes(event.data.input),
+            });
+            return;
+          default:
+            log.info({ ...base, event: "control.requested", name });
         }
       });
     },
 
-    "action.result"(event, ctx) {
-      safe("action.result", () => {
-        const action = event.data.result;
+    "call.settled"(event, ctx) {
+      safe("call.settled", () => {
+        const { callId, outcome, output } = event.data;
+        const identity = callIdentity.get(callId);
         const base: LogFields = {
-          ...traceBase(event, ctx, "action.result"),
-          turnId: event.data.turnId,
-          stepIndex: event.data.stepIndex,
-          sequence: event.data.sequence,
-          status: event.data.status,
-          callId: action.callId,
-          actionKind: action.kind,
-          ms: elapsedMs(
-            callStartedAt,
-            scopedKey(ctx.session.id, action.callId),
-            eventMs(event),
-          ),
-          errorCode: event.data.error?.code,
-          errorMessage: event.data.error
-            ? truncateText(event.data.error.message, 500)
-            : undefined,
+          ...traceBase(ctx, "tool.result"),
+          turnId: event.scope?.turnId,
+          runId: event.scope?.runId,
+          status: outcome,
+          callId,
+          capabilityKind: identity?.kind,
+          ms: elapsedMs(callStartedAt, scopedKey(ctx.session.id, callId)),
+          ...errorFields(event.data.error),
+          outputOf: event.data.outputOf?.callId,
         };
 
-        switch (action.kind) {
-          case "tool-result":
+        if (!identity) {
+          log.info({ ...base, event: "call.settled" });
+          return;
+        }
+
+        switch (identity.kind) {
+          case "tool":
             log.info({
               ...base,
-              event: "tool.result",
-              toolName: action.toolName,
-              errorName: action.errorName,
-              output: summarizeToolOutput(action.toolName, action.output),
+              toolName: identity.name,
+              output: summarizeToolOutput(identity.name, output),
             });
-            auditDomainTool(event, action, base);
-            break;
-          case "subagent-result":
+            auditDomainTool(identity.name, outcome, output, base);
+            return;
+          case "agent":
             log.info({
               ...base,
-              event: "subagent.result",
-              subagentName: action.subagentName,
-              isError: action.isError === true,
-              usage: "usage" in action ? action.usage : undefined,
-              output: summarizeToolOutput("", action.output),
+              event: identity.remote
+                ? "remote_agent.result"
+                : "subagent.result",
+              subagentName: identity.name,
+              label: event.data.label,
+              output: summarizeToolOutput("", output),
             });
-            break;
-          case "load-skill-result":
+            return;
+          case "skill":
             log.info({
               ...base,
               event: "skill.result",
-              name: action.name,
-              isError: action.isError === true,
-              output: summarizeToolOutput("", action.output),
+              name: identity.name,
+              label: event.data.label,
             });
-            break;
+            return;
+          default:
+            log.info({ ...base, event: "control.settled", name: identity.name });
         }
       });
     },
 
-    "input.requested"(event, ctx) {
-      safe("input.requested", () => {
-        for (const request of event.data.requests) {
-          log.info({
-            ...traceBase(event, ctx, "input.requested"),
-            turnId: event.data.turnId,
-            stepIndex: event.data.stepIndex,
-            sequence: event.data.sequence,
-            callId: event.data.callId,
-            taskId: event.data.taskId,
-            ...summarizeInputRequest(request),
-          });
-        }
-      });
-    },
+    "interaction.opened"(event, ctx) {
+      safe("interaction.opened", () => {
+        const { interactionId, request, subject } = event.data;
+        const callId = "callId" in subject ? subject.callId : undefined;
+        remember(interactionKind, interactionId, request.kind);
 
-    "input.resolved"(event, ctx) {
-      safe("input.resolved", () => {
-        for (const resolution of event.data.resolutions) {
-          log.info({
-            ...traceBase(event, ctx, "input.resolved"),
-            turnId: event.data.turnId,
-            stepIndex: event.data.stepIndex,
-            sequence: event.data.sequence,
-            ...summarizeInputResolution(resolution),
-          });
-        }
-      });
-    },
-
-    "approval.settled"(event, ctx) {
-      safe("approval.settled", () => {
         log.info({
-          ...traceBase(event, ctx, "approval.settled"),
-          turnId: event.data.turnId,
-          stepIndex: event.data.stepIndex,
-          sequence: event.data.sequence,
-          requestId: event.data.requestId,
-          outcome: event.data.outcome,
-          responderPrincipalId: event.data.responderPrincipalId,
+          ...traceBase(ctx, "input.requested"),
+          turnId: ctx.turn?.id,
+          interactionId,
+          callId,
+          toolName: callId ? callIdentity.get(callId)?.name : undefined,
+          ...summarizeInputRequest({
+            interactionId,
+            kind: request.kind,
+            prompt: request.prompt,
+            options: request.options,
+            allowFreeform: request.allowFreeform,
+            display: request.display,
+          }),
         });
       });
     },
 
-    "step.completed"(event, ctx) {
-      safe("step.completed", () => {
-        const usage = event.data.usage;
+    "response.submitted"(event) {
+      safe("response.submitted", () => {
+        remember(
+          responseDelivery,
+          event.data.interactionId,
+          event.data.deliveryId,
+        );
+      });
+    },
+
+    "interaction.settled"(event, ctx) {
+      safe("interaction.settled", () => {
+        const kind = take(interactionKind, event.data.interactionId);
+        const deliveryId = take(responseDelivery, event.data.interactionId);
+        const responderId =
+          deliveryId === undefined
+            ? undefined
+            : responderPrincipal(ctx, deliveryId);
+
         log.info({
-          ...traceBase(event, ctx, "step.completed"),
-          turnId: event.data.turnId,
-          stepIndex: event.data.stepIndex,
-          sequence: event.data.sequence,
+          ...traceBase(ctx, "input.resolved"),
+          interactionId: event.data.interactionId,
+          reason: event.data.reason,
+          responderPrincipalId: responderId,
+          ...summarizeInputResolution({
+            interactionId: event.data.interactionId,
+            kind,
+            outcome: event.data.outcome,
+            response: event.data.response,
+          }),
+        });
+
+        if (kind === "approval" || kind === "budget") {
+          log.info({
+            ...traceBase(ctx, "approval.settled"),
+            interactionId: event.data.interactionId,
+            inputKind: kind,
+            outcome: event.data.outcome,
+            responderPrincipalId: responderId,
+          });
+        }
+      });
+    },
+
+    "model.started"(event, ctx) {
+      safe("model.started", () => {
+        remember(
+          runStartedAt,
+          scopedKey(ctx.session.id, event.data.runId),
+          { at: Date.now(), attempt: event.data.attempt },
+        );
+      });
+    },
+
+    "model.settled"(event, ctx) {
+      safe("model.settled", () => {
+        const key = scopedKey(ctx.session.id, event.data.runId);
+        const started = take(runStartedAt, key);
+        const base: LogFields = {
+          ...traceBase(ctx, "step.completed"),
+          turnId: event.scope?.turnId,
+          runId: event.data.runId,
+          attempt: started?.attempt,
+          ms: started === undefined ? undefined : Date.now() - started.at,
           finishReason: event.data.finishReason,
-          inputTokens: usage?.inputTokens,
-          outputTokens: usage?.outputTokens,
-          cacheReadTokens: usage?.cacheReadTokens,
-          cacheWriteTokens: usage?.cacheWriteTokens,
-          costUsd: usage?.costUsd,
-        });
-      });
-    },
+        };
 
-    "step.failed"(event, ctx) {
-      safe("step.failed", () => {
+        if (event.data.outcome === "completed") {
+          log.info(base);
+          return;
+        }
         log.warn({
-          ...traceBase(event, ctx, "step.failed"),
-          turnId: event.data.turnId,
-          stepIndex: event.data.stepIndex,
-          sequence: event.data.sequence,
-          code: event.data.code,
-          msg: truncateText(event.data.message, 500),
+          ...base,
+          event: "step.failed",
+          outcome: event.data.outcome,
+          ...errorFields(event.data.error),
         });
       });
     },
 
-    "turn.completed"(event, ctx) {
-      safe("turn.completed", () => {
-        log.info({
-          ...traceBase(event, ctx, "turn.completed"),
-          turnId: event.data.turnId,
-          sequence: event.data.sequence,
-          ms: elapsedMs(
-            turnStartedAt,
-            scopedKey(ctx.session.id, event.data.turnId),
-            eventMs(event),
-          ),
-        });
-      });
-    },
-
-    "turn.failed"(event, ctx) {
-      safe("turn.failed", () => {
+    "model.retried"(event, ctx) {
+      safe("model.retried", () => {
         log.warn({
-          ...traceBase(event, ctx, "turn.failed"),
-          turnId: event.data.turnId,
-          sequence: event.data.sequence,
-          code: event.data.code,
-          msg: truncateText(event.data.message, 500),
-          ms: elapsedMs(
-            turnStartedAt,
-            scopedKey(ctx.session.id, event.data.turnId),
-            eventMs(event),
-          ),
+          ...traceBase(ctx, "step.retried"),
+          turnId: event.scope?.turnId,
+          runId: event.data.runId,
+          attempt: event.data.attempt,
+          ...errorFields(event.data.error),
         });
       });
     },
 
-    "turn.cancelled"(event, ctx) {
-      safe("turn.cancelled", () => {
+    "usage.recorded"(event, ctx) {
+      safe("usage.recorded", () => {
+        const owner = event.data.owner;
         log.info({
-          ...traceBase(event, ctx, "turn.cancelled"),
-          turnId: event.data.turnId,
-          sequence: event.data.sequence,
-          ms: elapsedMs(
-            turnStartedAt,
-            scopedKey(ctx.session.id, event.data.turnId),
-            eventMs(event),
-          ),
+          ...traceBase(ctx, "usage"),
+          turnId: event.scope?.turnId,
+          runId: owner && "runId" in owner ? owner.runId : undefined,
+          usageKind: event.data.kind,
+          inputTokens: event.data.usage.inputTokens,
+          outputTokens: event.data.usage.outputTokens,
+          cacheReadTokens: event.data.usage.cacheReadTokens,
+          cacheWriteTokens: event.data.usage.cacheWriteTokens,
+          costUsd: event.data.usage.costUsd,
         });
       });
     },
 
-    "session.failed"(event, ctx) {
-      safe("session.failed", () => {
+    "delivery.settled"(event, ctx) {
+      safe("delivery.settled", () => {
+        log.info({
+          ...traceBase(ctx, "message.settled"),
+          turnId: event.data.turnId,
+          deliveryId: event.data.deliveryId,
+          outcome: event.data.outcome,
+          reason: event.data.reason,
+        });
+      });
+    },
+
+    "turn.settled"(event, ctx) {
+      safe("turn.settled", () => {
+        const turnId = event.data.turnId;
+        const base: LogFields = {
+          ...traceBase(ctx, "turn.completed"),
+          turnId,
+          ms: elapsedMs(turnStartedAt, scopedKey(ctx.session.id, turnId)),
+          replyParts: event.data.reply?.length,
+        };
+
+        switch (event.data.outcome) {
+          case "completed":
+            log.info(base);
+            return;
+          case "cancelled":
+            log.info({ ...base, event: "turn.cancelled" });
+            return;
+          default:
+            log.warn({
+              ...base,
+              event: "turn.failed",
+              ...errorFields(event.data.error),
+            });
+        }
+      });
+    },
+
+    "session.ended"(event, ctx) {
+      safe("session.ended", () => {
+        if (event.data.outcome === "completed") {
+          log.info(traceBase(ctx, "session.completed"));
+          return;
+        }
         log.error({
-          ...traceBase(event, ctx, "session.failed"),
-          code: event.data.code,
-          msg: truncateText(event.data.message, 500),
+          ...traceBase(ctx, "session.failed"),
+          ...errorFields(event.data.error),
         });
       });
     },
 
-    "session.completed"(event, ctx) {
-      safe("session.completed", () => {
-        log.info(traceBase(event, ctx, "session.completed"));
+    "context.settled"(event, ctx) {
+      safe("context.settled", () => {
+        const base: LogFields = {
+          ...traceBase(ctx, "context.settled"),
+          contextKind: event.data.kind,
+          outcome: event.data.outcome,
+          ...errorFields(event.data.error),
+        };
+        if (event.data.outcome === "completed") {
+          log.info(base);
+          return;
+        }
+        log.warn(base);
       });
     },
   },

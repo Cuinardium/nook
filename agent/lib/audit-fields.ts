@@ -218,47 +218,40 @@ export function summarizeToolOutput(
   }
 }
 
-export function summarizeInputRequest(request: {
+export function summarizeInputRequest(input: {
+  readonly interactionId: string;
   readonly kind: string;
-  readonly requestId: string;
   readonly prompt: string;
-  readonly action?: {
-    readonly toolName?: string;
-    readonly callId?: string;
-  } | null;
   readonly options?: readonly unknown[] | undefined;
   readonly allowFreeform?: boolean | undefined;
   readonly display?: string | undefined;
 }): LogFields {
   return {
-    requestId: request.requestId,
-    inputKind: request.kind,
-    toolName: request.action?.toolName,
-    callId: request.action?.callId,
-    promptChars: request.prompt.length,
-    optionCount: request.options?.length,
-    allowFreeform: request.allowFreeform,
-    display: request.display,
+    interactionId: input.interactionId,
+    inputKind: input.kind,
+    promptChars: input.prompt.length,
+    optionCount: input.options?.length,
+    allowFreeform: input.allowFreeform,
+    display: input.display,
   };
 }
 
-export function summarizeInputResolution(resolution: {
-  readonly kind: string;
-  readonly requestId: string;
+export function summarizeInputResolution(input: {
+  readonly interactionId: string;
+  readonly kind?: string | undefined;
   readonly outcome: string;
-  readonly response?:
-    | {
-        readonly optionId?: string | undefined;
-        readonly text?: string | undefined;
-      }
-    | undefined;
+  readonly response?: Readonly<Record<string, unknown>> | undefined;
 }): LogFields {
+  const response = input.response;
+  const optionId =
+    typeof response?.optionId === "string" ? response.optionId : undefined;
+  const text = typeof response?.text === "string" ? response.text : undefined;
   return {
-    requestId: resolution.requestId,
-    inputKind: resolution.kind,
-    outcome: resolution.outcome,
-    optionId: resolution.response?.optionId,
-    responseChars: resolution.response?.text?.length ?? 0,
+    interactionId: input.interactionId,
+    inputKind: input.kind,
+    outcome: input.outcome,
+    optionId,
+    responseChars: text?.length ?? 0,
   };
 }
 

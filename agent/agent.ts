@@ -7,10 +7,12 @@ import { getConfig } from "./lib/config";
 // absence, and `|| fallback` also absorbs NaN from garbage values.
 const CONTEXT_TOKENS = Number(process.env.NOOK_MODEL_CONTEXT_TOKENS) || 131072;
 
-// Built lazily on the first step: authored modules are evaluated at build
+// Built lazily on the first model call: authored modules are evaluated at build
 // time without production env, and the API key is required.
 // One model per eve session so every OpenCode Go request carries a stable
-// per-conversation `x-opencode-session` header (required from 09/06).
+// per-conversation `x-opencode-session` header (required from 09/06). Bounded
+// because the process outlives its sessions.
+const MAX_CACHED_MODELS = 64;
 type OpenCodeModel = ReturnType<ReturnType<typeof createOpenAICompatible>>;
 const models = new Map<string, OpenCodeModel>();
 function opencodeModel(sessionId: string) {
@@ -25,21 +27,23 @@ function opencodeModel(sessionId: string) {
     apiKey: openCodeApiKey,
     headers: { "x-opencode-session": sessionId },
   })(openCodeModel);
+  if (models.size >= MAX_CACHED_MODELS) {
+    const oldest = models.keys().next().value;
+    if (oldest !== undefined) {
+      models.delete(oldest);
+    }
+  }
   models.set(sessionId, model);
   return model;
 }
 
 export default defineAgent({
-  model: defineDynamic({
-    events: {
-      "step.started": (_event, ctx) => ({
-        model: opencodeModel(ctx.session.id),
-        modelContextWindowTokens: CONTEXT_TOKENS,
-      }),
-    },
-  }),
+  model: defineDynamic((ctx) => ({
+    model: opencodeModel(ctx.session.id),
+    modelContextWindowTokens: CONTEXT_TOKENS,
+  })),
   compaction: {
-    thresholdPercent: 0.75,
+    threshold: 0.75,
     modelContextWindowTokens: CONTEXT_TOKENS,
   },
 });
