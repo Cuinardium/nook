@@ -55,6 +55,22 @@ docker logs nook-nook-1 --since 24h 2>&1 | grep -a '^{' \
 The `grep` drops the multi-line harness errors that share the stream; without it
 `jq` stops at the first one.
 
+### Unknown senders
+
+A message the channel drops never opens a session, so the audit trail has no
+row for it. The channel emits its own `message.rejected` warning instead, with
+the sender's Telegram id, username and name:
+
+```sh
+# Who tried to reach the bot without being registered.
+docker logs nook-nook-1 --since 24h 2>&1 | grep -a '^{' \
+  | jq -c 'select(.event == "message.rejected") | {ts, reason, telegramUserId, telegramUsername, chatType}'
+```
+
+That is the id `scripts/users.ts add --telegram-id` expects. A `reason` of
+`not-allowlisted` means the user is unknown; `not-private-chat` means the
+message came from a group, where nook does not answer.
+
 Docker's default `json-file` driver does not rotate. Bound it in `compose.yaml`:
 
 ```yaml

@@ -5,6 +5,7 @@ import {
   type TelegramMessage,
 } from "eve/channels/telegram";
 import { getUserByTelegramId } from "../lib/users";
+import { log } from "../lib/log";
 
 // Telegram's `typing` chat action expires after ~5s, so while tool calls run we
 // refresh it on an interval. Keyed by chat id because one process can serve
@@ -111,6 +112,13 @@ export default telegramChannel({
 
     // Only private-chat senders get through
     if (message.chat.type !== "private") {
+      log.warn({
+        event: "message.rejected",
+        reason: "not-private-chat",
+        chatType: message.chat.type,
+        chatId: message.chat.id,
+        telegramUserId: message.from?.id ?? null,
+      });
       return null;
     }
 
@@ -122,6 +130,18 @@ export default telegramChannel({
 
     const user = getUserByTelegramId(userId);
     if (!user) {
+      // Dropped by design, but never silently: the operator needs the sender id
+      // to grant access, and the sender has no way to learn it on their own.
+      log.warn({
+        event: "message.rejected",
+        reason: "not-allowlisted",
+        telegramUserId: userId,
+        telegramUsername: message.from?.username ?? null,
+        telegramName:
+          [message.from?.firstName, message.from?.lastName]
+            .filter(Boolean)
+            .join(" ") || null,
+      });
       return null;
     }
 
