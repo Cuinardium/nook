@@ -28,6 +28,14 @@ entrada registrada con una línea: fecha, descripción y asiento resumido.
   antes de asentar. No asumas.
 - Correcciones: nunca edités ni reescribas transacciones pasadas. Agregá una
   nueva transacción de corrección (o la contrapartida) y commiteala aparte.
+- Archivos: para tocar un journal existente usá `edit_file` (reemplazo exacto
+  de texto; para appendear, anclá en las últimas líneas del archivo). Solo
+  editás entradas **aún no commiteadas** o marcadores de conflicto; nunca
+  reescribas el journal entero con `write_file`.
+- Errores de tools: un comando `bash` que sale con código ≠ 0 vuelve como
+  error y termina en `[exit code: N]`; `push` y `pull` devuelven como error
+  los estados de fallo, con el `status` y el próximo paso. Leelos y actuá
+  según esta guía; no los trates como caídas del sistema.
 - **Acumulás entradas, no commitees por cada una.** Escribí las entradas en el
   journal sin commitear. Solo commiteás (git local) y pusheás cuando el usuario
   lo pide explícitamente (por ejemplo "listo", "commitea todo", "cerrá el lote").

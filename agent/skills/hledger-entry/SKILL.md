@@ -24,7 +24,7 @@ description: Procedimiento paso a paso para registrar una compra, ingreso o gana
    - Activos/inversiones solo si el usuario pide explicitamente registrar una
      operación de cartera; usá lotes `{costo}` igual que las entradas previas.
 
-4. **Validar**: appendear al journal y correr `hledger check` más
+4. **Validar**: appendear al journal con `edit_file` y correr `hledger check` más
    `hledger bal -p "today"`. Si hay error, corregilo antes de seguir. Si el
    error es por precios faltantes (`include precios/`), llamá `update_prices`
    y reintentá.
