@@ -141,6 +141,23 @@ export function summarizeToolInput(
         path: stringField(record, "filePath"),
         contentBytes: textBytes(record.content),
       };
+    case "edit_file": {
+      // Sizes only: oldText/newText are journal content.
+      const edits = Array.isArray(record.edits) ? record.edits : [];
+      let oldBytes = 0;
+      let newBytes = 0;
+      for (const edit of edits) {
+        const e = asRecord(edit);
+        oldBytes += textBytes(e.oldText);
+        newBytes += textBytes(e.newText);
+      }
+      return {
+        path: stringField(record, "path"),
+        editCount: arrayLength(record.edits),
+        oldBytes,
+        newBytes,
+      };
+    }
     case "web_fetch": {
       const url = stringField(record, "url");
       return {
@@ -178,6 +195,8 @@ export function summarizeToolOutput(
     case "bash":
       return {
         ...base,
+        // "completed", or "running" when it outlived the wait (no exitCode).
+        status: stringField(record, "status"),
         exitCode: numberField(record, "exitCode"),
         stdoutBytes: textBytes(record.stdout),
         stderrBytes: textBytes(record.stderr),
@@ -195,6 +214,12 @@ export function summarizeToolOutput(
         ...base,
         path: stringField(record, "path"),
         existed: booleanField(record, "existed"),
+      };
+    case "edit_file":
+      return {
+        ...base,
+        path: stringField(record, "path"),
+        replacements: numberField(record, "replacements"),
       };
     case "web_fetch":
       return {

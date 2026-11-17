@@ -68,6 +68,24 @@ describe("summarizeToolInput", () => {
     assert.ok(!JSON.stringify(input).includes("gastos:cafe"));
   });
 
+  it("never copies edit_file text, only sizes", () => {
+    const input = summarizeToolInput("edit_file", {
+      path: "/workspace/ledger/2026.journal",
+      edits: [
+        { oldText: "  gastos:cafe  $4.500", newText: "  gastos:cafe  $5.000" },
+        { oldText: "Bar", newText: "Bar gonza" },
+      ],
+    });
+
+    assert.equal(input.path, "/workspace/ledger/2026.journal");
+    assert.equal(input.editCount, 2);
+    assert.equal(input.oldBytes, Buffer.byteLength("  gastos:cafe  $4.500Bar"));
+    assert.equal(input.newBytes, Buffer.byteLength("  gastos:cafe  $5.000Bar gonza"));
+    const json = JSON.stringify(input);
+    assert.ok(!json.includes("gastos:cafe"));
+    assert.ok(!json.includes("gonza"));
+  });
+
   it("records question size, not the prompt", () => {
     const input = summarizeToolInput("ask_question", {
       prompt: "¿Cuánto salió el café?",
@@ -109,6 +127,31 @@ describe("summarizeToolOutput", () => {
     assert.equal(output.path, "/workspace/ledger/2026.journal");
     assert.equal(output.totalLines, 1);
     assert.ok(!JSON.stringify(output).includes("Cafe"));
+  });
+
+  it("records bash status, including commands still running", () => {
+    const running = summarizeToolOutput("bash", {
+      status: "running",
+      pid: 42,
+      outputDirectory: "/tmp/out",
+      message: "still running",
+      stdout: "",
+      stderr: "",
+      truncated: false,
+    });
+
+    assert.equal(running.status, "running");
+    assert.equal(running.exitCode, undefined);
+  });
+
+  it("reports edit_file path and replacement count", () => {
+    const output = summarizeToolOutput("edit_file", {
+      path: "/workspace/ledger/2026.journal",
+      replacements: 2,
+    });
+
+    assert.equal(output.path, "/workspace/ledger/2026.journal");
+    assert.equal(output.replacements, 2);
   });
 });
 
