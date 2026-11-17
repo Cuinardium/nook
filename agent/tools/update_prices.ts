@@ -1,6 +1,7 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { getConfig } from "../lib/config";
+import { fetchJsonWithRetry } from "../lib/fetch-retry";
 import type { LogFields } from "../lib/log";
 
 const outputSchema = z.discriminatedUnion("updated", [
@@ -64,11 +65,12 @@ export default defineTool({
       };
     }
 
-    const response = await fetch("https://dolarapi.com/v1/dolares");
-    if (!response.ok) {
-      throw new Error(`dolarapi respondió ${response.status}`);
-    }
-    const data = (await response.json()) as DolarApiEntry[];
+    // Idempotent GET: retried in-tool so a transient blip never reaches the
+    // model; a real outage still throws and the model gets the error.
+    const data = await fetchJsonWithRetry<DolarApiEntry[]>(
+      "https://dolarapi.com/v1/dolares",
+      { signal: ctx.abortSignal },
+    );
 
     // Date in the user's timezone, matching what the journal expects.
     const date = new Intl.DateTimeFormat("en-CA", {
