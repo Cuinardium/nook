@@ -13,6 +13,7 @@
  * the user.
  */
 
+import type { ToolModelOutput } from "eve/tools";
 import { z } from "zod";
 import { gitAuthFlag, withForgeCredentials } from "./forge.ts";
 import type { NookUser } from "./users.ts";
@@ -77,6 +78,56 @@ export const outcomeSchema = z.discriminatedUnion("status", [
 
 export type LedgerOutcome = z.infer<typeof outcomeSchema>;
 export type LedgerStatus = LedgerOutcome["status"];
+
+/**
+ * What the model reads for a ledger outcome. Successes stay structured JSON;
+ * failures become an error result (eve's `error-text`) carrying the outcome
+ * plus the next step, so the provider flags them as errors while the call
+ * still completes and hooks/audit keep the full structured output.
+ * Hand-written literal (not `toolOutput`) so this module stays runtime-free
+ * of eve and testable under `node --test`.
+ */
+export function ledgerModelOutput(outcome: LedgerOutcome): ToolModelOutput {
+  const next = nextStepFor(outcome);
+  if (next === undefined) {
+    return { type: "json", value: outcome };
+  }
+  return {
+    type: "error-text",
+    value: `${JSON.stringify(outcome)}\n\nPróximo paso: ${next}`,
+  };
+}
+
+function nextStepFor(outcome: LedgerOutcome): string | undefined {
+  switch (outcome.status) {
+    case "pushed":
+    case "pulled":
+    case "clean":
+      return undefined;
+    case "conflict":
+      return (
+        "hay un rebase en curso. Resolvé los marcadores en `files` (conservá " +
+        "tus entradas, respetá lo que cambió el remoto), corré `hledger check`, " +
+        "`git add` + `git rebase --continue` y llamá `push`. Si te excede, " +
+        "`git rebase --abort` y avisale al usuario."
+      );
+    case "push_failed":
+      return (
+        "los commits quedaron locales. Reintentá `push` una sola vez; si " +
+        "vuelve a fallar, avisá en una línea y pará."
+      );
+    case "pull_failed":
+      return (
+        "el repo local quedó como estaba. Avisá en una línea y pará; no " +
+        "reintentes a ciegas."
+      );
+    case "blocked":
+      return (
+        "arreglá la causa que indica `reason` (por ejemplo, commitear lo " +
+        "pendiente) antes de volver a llamar. No repitas la misma llamada."
+      );
+  }
+}
 
 /** The slice of a sandbox session this module needs. */
 export type CommandRunner = {

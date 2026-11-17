@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  ledgerModelOutput,
   pullOnly,
   pushPending,
   type CommandRunner,
+  type LedgerOutcome,
 } from "./ledger-repo.ts";
 import type { NookUser } from "./users.ts";
 
@@ -366,5 +368,37 @@ describe("pullOnly", () => {
 
     assert.equal(out.status, "conflict");
     assert.ok(!sb.commands.some((c) => c.includes("pull --rebase")));
+  });
+});
+
+describe("ledgerModelOutput", () => {
+  it("keeps successes as structured JSON", () => {
+    for (const outcome of [
+      { status: "pushed", sha: "abc123" },
+      { status: "pulled", sha: "abc123" },
+      { status: "clean", reason: "nada pendiente" },
+    ] as const) {
+      assert.deepEqual(ledgerModelOutput(outcome), {
+        type: "json",
+        value: outcome,
+      });
+    }
+  });
+
+  it("flags failures as error results with the outcome and a next step", () => {
+    const outcomes: LedgerOutcome[] = [
+      { status: "conflict", files: ["2026.journal"], detail: "rebase" },
+      { status: "push_failed", sha: "abc123", detail: "auth" },
+      { status: "pull_failed", detail: "network" },
+      { status: "blocked", reason: "worktree sucio", files: ["2026.journal"] },
+    ];
+
+    for (const outcome of outcomes) {
+      const out = ledgerModelOutput(outcome);
+      assert.equal(out.type, "error-text");
+      const value = out.value as string;
+      assert.ok(value.startsWith(JSON.stringify(outcome)));
+      assert.match(value, /Próximo paso: /);
+    }
   });
 });

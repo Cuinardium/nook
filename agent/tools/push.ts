@@ -2,6 +2,7 @@ import { defineTool } from "eve/tools";
 import { always } from "eve/tools/approval";
 import { z } from "zod";
 import {
+  ledgerModelOutput,
   outcomeSchema,
   pushPending,
   type LedgerOutcome,
@@ -49,6 +50,7 @@ export default defineTool({
     "Pushea al remoto del ledger en /workspace/ledger: rebasea los commits locales sobre el remoto y los pushea (pide aprobación, a ciegas: no muestra el contenido). El git local (add, commit, resolver conflictos) lo hacés vos con bash. Devuelve un status estructurado; nunca pongas credenciales ni toques el remote a mano.",
   inputSchema: z.object({}),
   outputSchema,
+  toModelOutput: ledgerModelOutput,
   approval: {
     request: always(),
     prompt: () => "Confirmar push\n\nPusheo los commits pendientes al remoto.",

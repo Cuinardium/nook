@@ -1,6 +1,7 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import {
+  ledgerModelOutput,
   outcomeSchema,
   pullOnly,
   type LedgerOutcome,
@@ -46,6 +47,7 @@ export default defineTool({
     "Trae lo nuevo del remoto del ledger en /workspace/ledger sin pushear nada: fetch + rebase para analizar lo que se pusheó desde otra máquina. No necesita aprobación. Si hay commits locales sin pushear, los rebasea encima y los deja sin pushear (después usá push). Devuelve un status estructurado.",
   inputSchema: z.object({}),
   outputSchema,
+  toModelOutput: ledgerModelOutput,
   async execute(_input, ctx) {
     // Same principal resolution as push: fail closed before any git work.
     const principalId =
