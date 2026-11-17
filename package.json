@@ -16,9 +16,9 @@
     "typecheck": "tsc"
   },
   "dependencies": {
-    "@ai-sdk/openai-compatible": "^3.0.90",
-    "ai": "^7.0.170",
-    "eve": "1.0.0-rc.10",
+    "@ai-sdk/openai-compatible": "^3.0.93",
+    "ai": "^7.0.175",
+    "eve": "1.0.2",
     "zod": "^4.6.7"
   },
   "devDependencies": {
